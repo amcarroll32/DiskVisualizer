@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private TimeSpan _lastScanFinished;
     private readonly List<string> _probing = [];
     private readonly List<string> _notReady = [];
+    private Dictionary<char, PhysicalDisk>? _disks;
 
     public MainWindow()
     {
@@ -89,9 +90,11 @@ public partial class MainWindow : Window
         HogsList.ItemsSource = null;
         HogsTab.Header = "Space hogs";
         HogsSummary.Text = "Space hogs are listed as drives finish scanning…";
+        _disks = null;
         NavigateTo(pc);
         _progressTimer.Start();
         UpdateStatus();
+        LoadDiskInfo(pc);
 
         // Even listing drive types can stall on a misbehaving device, so stay off the UI thread.
         var drives = await Task.Run(() => DriveInfo.GetDrives()
@@ -114,7 +117,7 @@ public partial class MainWindow : Window
             HogsSummary.Text = "No drives were scanned.";
     }
 
-    private sealed record DriveProbe(string Name, string Label, long TotalSize, long FreeSize, bool IsRemovable);
+    private sealed record DriveProbe(string Name, string Label, long TotalSize, long FreeSize, bool IsRemovable, bool HasDcim);
 
     /// <summary>
     /// Checks a drive on a background thread (an unready drive can take 20+ seconds to say so),
@@ -127,7 +130,8 @@ public partial class MainWindow : Window
             try
             {
                 return drive.IsReady
-                    ? new DriveProbe(drive.Name, drive.VolumeLabel, drive.TotalSize, drive.TotalFreeSpace, drive.DriveType == DriveType.Removable)
+                    ? new DriveProbe(drive.Name, drive.VolumeLabel, drive.TotalSize, drive.TotalFreeSpace, drive.DriveType == DriveType.Removable,
+                        drive.DriveType == DriveType.Removable && Directory.Exists(Path.Join(drive.Name, "DCIM")))
                     : null;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -153,10 +157,12 @@ public partial class MainWindow : Window
             Size = probe.TotalSize,
             Capacity = probe.TotalSize,
             IsRemovable = probe.IsRemovable,
+            HasDcimFolder = probe.HasDcim,
             FreeSize = probe.FreeSize,
             IsScanning = true,
         };
         pc.Children!.Add(node);
+        ApplyHardware(node);
         var scanner = new DriveScanner(node, probe.TotalSize, probe.FreeSize);
         _scanners.Add(scanner);
         RecomputeRoot(pc);
@@ -194,6 +200,49 @@ public partial class MainWindow : Window
         RefreshHogs();
         UpdateStatus();
     }
+
+    /// <summary>Physical disks, partitions and health come from a separate (sometimes slow) Windows query.</summary>
+    private async void LoadDiskInfo(FsNode pc)
+    {
+        var disks = await Task.Run(DiskInfoProvider.Query);
+#if DEBUG
+        disks = FakeHealthForTesting(disks);
+#endif
+        if (pc != _pc)
+            return;
+        _disks = disks;
+        foreach (var drive in pc.Children!)
+            ApplyHardware(drive);
+        Map.Invalidate();
+        RefreshSidePanel();
+    }
+
+    private void ApplyHardware(FsNode drive)
+    {
+        if (_disks == null)
+            return;
+        char letter = char.ToUpperInvariant(drive.Name[0]);
+        _disks.TryGetValue(letter, out var disk);
+        drive.Hardware = DriveHardware.Classify(letter, disk, drive.IsRemovable, drive.HasDcimFolder);
+    }
+
+#if DEBUG
+    /// <summary>Debug builds only: DISKVIS_FAKE_HEALTH="D=Warning;E=Unhealthy" to preview health states.</summary>
+    private static Dictionary<char, PhysicalDisk> FakeHealthForTesting(Dictionary<char, PhysicalDisk> disks)
+    {
+        var spec = Environment.GetEnvironmentVariable("DISKVIS_FAKE_HEALTH");
+        if (string.IsNullOrEmpty(spec))
+            return disks;
+        foreach (var part in spec.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var kv = part.Split('=');
+            if (kv.Length == 2 && disks.TryGetValue(char.ToUpperInvariant(kv[0][0]), out var disk) && Enum.TryParse<DiskHealth>(kv[1], out var health))
+                foreach (char l in disk.Letters)
+                    disks[l] = disk with { Health = health };
+        }
+        return disks;
+    }
+#endif
 
     private static void RecomputeRoot(FsNode pc)
     {
@@ -370,7 +419,16 @@ public partial class MainWindow : Window
         Brush BarBrush,
         string Glyph = "",
         Visibility GlyphVisibility = Visibility.Collapsed,
-        Visibility SwatchVisibility = Visibility.Visible);
+        Visibility SwatchVisibility = Visibility.Visible,
+        Brush? HealthBrush = null,
+        Visibility HealthVisibility = Visibility.Collapsed,
+        string HealthText = "",
+        Visibility AlertVisibility = Visibility.Collapsed,
+        string Detail2 = "",
+        Visibility Detail2Visibility = Visibility.Collapsed)
+    {
+        public string AlertGlyph => Theme.AlertGlyph;
+    }
 
     private sealed record LegendItem(string Name, Brush Swatch, string SizeText, string PercentText);
 
@@ -401,6 +459,9 @@ public partial class MainWindow : Window
         string detail = drive.IsScanning
             ? drive.ScanError != null ? "scan failed" : $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  scanning…"
             : $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  {Format.Count(drive.FileCount)} files";
+        var hw = drive.Hardware;
+        var health = hw?.Health ?? DiskHealth.Unknown;
+        var healthBrush = Theme.HealthBrush(health);
         return new RowItem(
             drive,
             drive.DisplayName,
@@ -413,9 +474,15 @@ public partial class MainWindow : Window
             new GridLength(Math.Max(full, 0.0001), GridUnitType.Star),
             new GridLength(Math.Max(1 - full, 0.0001), GridUnitType.Star),
             full > 0.9 ? Theme.CapacityCritical : Theme.Accent,
-            drive.IsRemovable ? "\uE88E" : "\uEDA2",
+            Theme.DriveGlyph(drive),
             Visibility.Visible,
-            Visibility.Collapsed);
+            Visibility.Collapsed,
+            healthBrush,
+            healthBrush != null ? Visibility.Visible : Visibility.Collapsed,
+            hw?.HealthLabel ?? "",
+            health is DiskHealth.Warning or DiskHealth.Unhealthy ? Visibility.Visible : Visibility.Collapsed,
+            hw != null ? $"{hw.HealthLabel}  ·  {hw.DiskLine}" : "",
+            hw != null ? Visibility.Visible : Visibility.Collapsed);
     }
 
     private void RefreshSidePanel()
@@ -494,7 +561,8 @@ public partial class MainWindow : Window
             }
             case NodeKind.Drive:
                 return $"{Format.Bytes(node.Capacity - node.FreeSize)} used of {Format.Bytes(node.Capacity)}  ·  {Format.Bytes(node.FreeSize)} free\n" +
-                       $"{Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" + DeniedSuffix(node);
+                       $"{Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" + DeniedSuffix(node) +
+                       (node.Hardware is { } hw ? $"\n{hw.HealthLabel}  ·  {hw.DiskLine}" : "");
             default:
                 if (node.AccessDenied)
                     return "Access denied – this folder couldn't be read.";
@@ -933,6 +1001,8 @@ public partial class MainWindow : Window
                 $"Last change inside: {Format.Ago(node.LastWrite, now)} ({Format.Date(node.LastWrite)})",
             _ => "",
         };
+        if (node.Kind == NodeKind.Drive && node.Hardware is { } hardware)
+            TipDetail.Text += $"\n{hardware.HealthLabel}  ·  {hardware.DiskLine}";
         TipAge.Visibility = TipAge.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         TipPath.Text = node.HasRealPath ? node.FullPath : node.Parent?.FullPath ?? "";
 

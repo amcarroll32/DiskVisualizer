@@ -517,12 +517,16 @@ public sealed class TreemapControl : FrameworkElement
         dc.DrawRectangle(Theme.DriveHeaderFill, null, band);
         _labelBudget--;
 
+        // Health strip down the left edge: green, yellow or red (none when the disk doesn't report health).
+        var health = node.Hardware?.Health ?? DiskHealth.Unknown;
+        var healthBrush = Theme.HealthBrush(health);
+        if (healthBrush != null)
+            dc.DrawRectangle(healthBrush, null, new Rect(band.X, band.Y, 4, band.Height));
+
         var ink = dim ? Theme.MutedText : Theme.PrimaryText;
-        double x = band.X + 8;
-        var icon = new FormattedText(node.IsRemovable ? "\uE88E" : "\uEDA2", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-            _icons, 14, ink, _pixelsPerDip);
-        dc.DrawText(icon, new Point(x, band.Y + 6));
-        x += 22;
+        double x = band.X + 11;
+        dc.DrawText(MakeIcon(Theme.DriveGlyph(node), 15, ink), new Point(x, band.Y + 5));
+        x += 23;
 
         long capacity = node.Capacity > 0 ? node.Capacity : node.Size;
         long used = Math.Max(0, capacity - node.FreeSize);
@@ -531,12 +535,43 @@ public sealed class TreemapControl : FrameworkElement
         string stats = node.IsScanning
             ? node.ScanError != null ? "scan failed" : $"scanning… {node.ScanProgress:P0}"
             : $"{Format.Bytes(used)} used of {Format.Bytes(capacity)}  ·  {Format.Bytes(node.FreeSize)} free";
+        if (!node.IsScanning && node.Hardware != null && band.Width >= 520)
+            stats += "  ·  " + node.Hardware.KindLabel;
         var statsText = MakeText(stats, Theme.SecondaryText, 11, false, Math.Max(1, band.Width * 0.55));
         bool showStats = band.Width >= 280;
 
-        double titleWidth = band.Right - 8 - x - (showStats ? statsText.Width + 14 : 0);
+        // Warning / Unhealthy get an exclamation icon and a label right after the name.
+        FormattedText? alertIcon = null, alertText = null;
+        if (healthBrush != null && health != DiskHealth.Healthy)
+        {
+            alertIcon = MakeIcon(Theme.AlertGlyph, 13, healthBrush);
+            alertText = MakeText(node.Hardware!.HealthLabel, ink, 12, true, 120);
+        }
+        double alertWidth = alertIcon != null ? alertIcon.Width + 5 + alertText!.Width + 12 : 0;
+
+        // The name and health alert matter most: if they don't fit, shorten the stats to just the
+        // free space, then drop them (the capacity bar still shows how full the drive is).
+        double nameWidth = MakeText(node.DisplayName, ink, 13, true, 10_000).WidthIncludingTrailingWhitespace;
+        double Room(FormattedText? stats) => band.Right - 8 - x - alertWidth - (stats != null ? stats.Width + 14 : 0);
+        if (showStats && Room(statsText) < nameWidth && !node.IsScanning)
+        {
+            statsText = MakeText($"{Format.Bytes(node.FreeSize)} free", Theme.SecondaryText, 11, false, Math.Max(1, band.Width * 0.55));
+            if (Room(statsText) < nameWidth)
+                showStats = false;
+        }
+
+        double titleWidth = Room(showStats ? statsText : null);
         if (titleWidth >= 10)
-            dc.DrawText(MakeText(node.DisplayName, ink, 13, true, titleWidth), new Point(x, band.Y + 4));
+        {
+            var title = MakeText(node.DisplayName, ink, 13, true, titleWidth);
+            dc.DrawText(title, new Point(x, band.Y + 4));
+            if (alertIcon != null)
+            {
+                double ax = x + title.WidthIncludingTrailingWhitespace + 12;
+                dc.DrawText(alertIcon, new Point(ax, band.Y + 6));
+                dc.DrawText(alertText!, new Point(ax + alertIcon.Width + 5, band.Y + 5));
+            }
+        }
         if (showStats)
             dc.DrawText(statsText, new Point(band.Right - 8 - statsText.Width, band.Y + 6));
 
@@ -619,6 +654,9 @@ public sealed class TreemapControl : FrameworkElement
         var text = MakeText(s, brush, size, false, Math.Max(10, r.Width - 20));
         dc.DrawText(text, new Point(r.X + (r.Width - text.Width) / 2, r.Y + (r.Height - text.Height) / 2));
     }
+
+    private FormattedText MakeIcon(string glyph, double size, Brush brush) =>
+        new(glyph, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, _icons, size, brush, _pixelsPerDip);
 
     private FormattedText MakeText(string s, Brush brush, double size, bool semibold, double maxWidth) =>
         new(s, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, semibold ? _semibold : _regular, size, brush, _pixelsPerDip)

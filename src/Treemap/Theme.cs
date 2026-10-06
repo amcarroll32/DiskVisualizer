@@ -189,6 +189,28 @@ public static class Theme
 
     public static Brush FolderFill(int depth) => _folderFills[depth % _folderFills.Length];
 
+    /// <summary>Exclamation-in-triangle glyph for disks in Warning or Unhealthy state.</summary>
+    public const string AlertGlyph = "\uE814";
+
+    /// <summary>Icon-font glyph for a drive: SSD, hard drive, USB stick or memory card.</summary>
+    public static string DriveGlyph(FsNode drive) =>
+        (drive.Hardware?.Kind ?? (drive.IsRemovable ? DriveKind.UsbDrive : DriveKind.Unknown)) switch
+        {
+            DriveKind.Ssd => "\uE964",
+            DriveKind.UsbDrive => "\uE88E",
+            DriveKind.MemoryCard => "\uE7F1",
+            _ => "\uEDA2",
+        };
+
+    /// <summary>Green / yellow / red for Healthy / Warning / Unhealthy; null when the disk doesn't report health.</summary>
+    public static Brush? HealthBrush(DiskHealth health) => health switch
+    {
+        DiskHealth.Healthy => StatusGood,
+        DiskHealth.Warning => StatusWarning,
+        DiskHealth.Unhealthy => StatusCritical,
+        _ => null,
+    };
+
     public static Brush Fill(FsNode node, ColorMode mode, long nowTicks) => node.Kind switch
     {
         NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(_ageFills, UnknownAgeFill, node, nowTicks),

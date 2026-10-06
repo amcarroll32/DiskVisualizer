@@ -8,6 +8,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>DiskVisualizer</RootNamespace>
     <AssemblyName>DiskVisualizer</AssemblyName>
+    <Version>1.1.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Regenerate with tools/make-icon.ps1 -->
     <ApplicationIcon>Assets/app.ico</ApplicationIcon>
@@ -19,6 +21,10 @@
 
   <ItemGroup>
     <Resource Include="Assets/app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.12" />
   </ItemGroup>
 
 </Project>

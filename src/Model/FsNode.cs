@@ -59,6 +59,12 @@ public sealed class FsNode
 
     public bool IsRemovable { get; set; }
 
+    /// <summary>Removable volume with a DCIM folder at its root, i.e. almost certainly a camera card.</summary>
+    public bool HasDcimFolder { get; set; }
+
+    /// <summary>Physical disk, device kind and health (drives only; null until the disk query finishes).</summary>
+    public DriveHardware? Hardware { get; set; }
+
     // Drive scan state (UI thread only).
     public bool IsScanning { get; set; }
     public double ScanProgress { get; set; }
