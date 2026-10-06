@@ -5,10 +5,15 @@ using Microsoft.Win32;
 
 namespace DiskVisualizer.Platform;
 
-/// <summary>User preferences, stored in %LocalAppData%\DiskVisualizer\settings.json.</summary>
+/// <summary>
+/// User preferences. Stored next to the exe (DiskVisualizer.settings.json) so they travel with
+/// the portable app; when that folder isn't writable they go to %LocalAppData%\DiskVisualizer.
+/// </summary>
 public sealed class AppSettings
 {
-    private static readonly string FilePath = Path.Combine(
+    private static readonly string PortablePath = Path.Combine(AppContext.BaseDirectory, "DiskVisualizer.settings.json");
+
+    private static readonly string LocalPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DiskVisualizer", "settings.json");
 
     /// <summary>"Light", "Dark", or null to follow Windows.</summary>
@@ -16,28 +21,42 @@ public sealed class AppSettings
 
     public static AppSettings Load()
     {
-        try
+        // The portable file wins; the per-user file covers read-only locations and older versions.
+        foreach (var path in new[] { PortablePath, LocalPath })
         {
-            if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            // Unreadable or corrupt settings just fall back to defaults.
+            try
+            {
+                if (File.Exists(path))
+                    return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path)) ?? new AppSettings();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                // Unreadable or corrupt settings: try the next location, then fall back to defaults.
+            }
         }
         return new AppSettings();
     }
 
     public void Save()
     {
+        string json = JsonSerializer.Serialize(this);
+        if (TryWrite(PortablePath, json))
+            return;
+        TryWrite(LocalPath, json);
+        // If neither works, not remembering a preference isn't worth interrupting anyone over.
+    }
+
+    private static bool TryWrite(string path, string json)
+    {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, json);
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Not being able to remember a preference isn't worth interrupting anyone over.
+            return false;
         }
     }
 

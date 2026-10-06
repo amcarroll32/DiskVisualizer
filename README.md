@@ -19,19 +19,23 @@ A fast, read-only Windows app that scans every fixed and removable drive and sho
 
 ## Running it
 
-Requires Windows 10/11 and the [.NET 10 desktop runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+### Portable exe
+
+Build one self-contained exe that runs on any 64-bit Windows 10/11 PC, with nothing to install:
+
+```powershell
+dotnet publish -p:PublishProfile=Portable
+```
+
+This writes `publish/DiskVisualizer.exe` (about 60 MB), which you can copy anywhere, such as a USB stick. On first run it unpacks a few WPF graphics DLLs to `%TEMP%\.net`. Your theme choice is saved next to the exe in `DiskVisualizer.settings.json`, so it travels with it; if that folder isn't writable, it's saved in `%LocalAppData%\DiskVisualizer` instead.
+
+### From source
+
+Building requires the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 
 ```powershell
 dotnet run -c Release
 ```
-
-To build a single-file exe into `publish/`:
-
-```powershell
-dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
-```
-
-Add `--self-contained true` to run on machines without the .NET runtime (the exe is larger).
 
 ## Notes and limits
 
