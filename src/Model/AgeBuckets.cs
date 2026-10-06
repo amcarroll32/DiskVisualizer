@@ -1,14 +1,16 @@
 namespace DiskVisualizer.Model;
 
-/// <summary>Ordinal last-modified buckets used by the "Color: Age" mode.</summary>
+/// <summary>
+/// Ordinal last-modified buckets used by the "Color: Age" mode. Five, because that's the most
+/// steps a single-hue ramp can hold while staying distinguishable on a light surface.
+/// </summary>
 public static class AgeBuckets
 {
-    public const int Count = 6;
+    public const int Count = 5;
     public const int Unknown = -1;
 
     private static readonly long[] Limits =
     [
-        TimeSpan.FromDays(7).Ticks,
         TimeSpan.FromDays(30).Ticks,
         TimeSpan.FromDays(182).Ticks,
         TimeSpan.FromDays(365).Ticks,
@@ -28,12 +30,11 @@ public static class AgeBuckets
 
     public static string Label(int bucket) => bucket switch
     {
-        0 => "Under a week",
-        1 => "1 week – 1 month",
-        2 => "1 – 6 months",
-        3 => "6 – 12 months",
-        4 => "1 – 3 years",
-        5 => "Over 3 years",
+        0 => "Under a month",
+        1 => "1 – 6 months",
+        2 => "6 – 12 months",
+        3 => "1 – 3 years",
+        4 => "Over 3 years",
         _ => "Unknown date",
     };
 }

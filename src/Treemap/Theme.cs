@@ -11,85 +11,188 @@ public enum ColorMode
 }
 
 /// <summary>
-/// Dark-surface palette. The eight category colors are the validated dark categorical
-/// slots (CVD-checked in this order); neutrals and textures cover the synthetic blocks.
+/// All app colors for the light and dark themes. Category colors are the validated categorical
+/// slots (CVD-checked in this order, stepped separately for each surface); age uses a validated
+/// single-hue ordinal ramp. Call <see cref="Apply"/> to switch; consumers re-read the properties.
 /// </summary>
 public static class Theme
 {
-    public static readonly Color Surface = Rgb(0x1e1e1c);
+    private static readonly int[] CategoryDark = [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767, 0x898781];
+    private static readonly int[] CategoryLight = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x4a3aa7, 0xe34948, 0x898781];
 
-    private static readonly Color[] CategoryColors =
-    [
-        Rgb(0x3987e5), // Video        – blue
-        Rgb(0xd95926), // Images       – orange
-        Rgb(0x199e70), // Audio        – aqua
-        Rgb(0xc98500), // Documents    – yellow
-        Rgb(0xd55181), // Archives     – magenta
-        Rgb(0x008300), // Programs     – green
-        Rgb(0x9085e9), // Disk images  – violet
-        Rgb(0xe66767), // Data/caches  – red
-        Rgb(0x898781), // Other        – muted neutral
-    ];
+    // Recent → old. Old files get the most contrast with the surface, so stale data stands out.
+    private static readonly int[] AgeDark = [0x184f95, 0x2a78d6, 0x5598e7, 0x9ec5f4, 0xcde2fb];
+    private static readonly int[] AgeLight = [0x86b6ef, 0x5598e7, 0x2a78d6, 0x1c5cab, 0x0d366b];
 
-    // Sequential blue ramp for age: recent = deep, old = pale, so stale data stands out on the dark surface.
-    private static readonly Color[] AgeColors =
-    [
-        Rgb(0x184f95), Rgb(0x256abf), Rgb(0x3987e5), Rgb(0x6da7ec), Rgb(0x9ec5f4), Rgb(0xcde2fb),
-    ];
+    private static Brush[] _folderFills = [];
+    private static Brush[] _categoryFills = [];
+    private static Brush[] _categorySwatches = [];
+    private static Brush[] _categoryText = [];
+    private static Brush[] _ageFills = [];
+    private static Brush[] _ageSwatches = [];
+    private static Brush[] _ageText = [];
 
-    private static readonly Color SmallFilesColor = Rgb(0x5e5d58);
-    private static readonly Color FreeColor = Rgb(0x2a2a28);
-    private static readonly Color UnreadableColor = Rgb(0x3a3533);
+    static Theme() => Apply(dark: true);
 
-    private static readonly Brush[] CategoryFills = CategoryColors.Select(Cushion).ToArray();
-    private static readonly Brush[] CategorySwatches = CategoryColors.Select(Solid).ToArray();
-    private static readonly Brush[] CategoryText = CategoryColors.Select(TextFor).ToArray();
-    private static readonly Brush[] AgeFills = AgeColors.Select(Cushion).ToArray();
-    private static readonly Brush[] AgeSwatches = AgeColors.Select(Solid).ToArray();
-    private static readonly Brush[] AgeText = AgeColors.Select(TextFor).ToArray();
+    public static bool IsDark { get; private set; }
 
-    public static readonly Brush SurfaceBrush = Solid(Surface);
-    public static readonly Brush SmallFilesFill = Cushion(SmallFilesColor);
-    public static readonly Brush SmallFilesSwatch = Solid(SmallFilesColor);
-    public static readonly Brush FreeFill = Hatch(FreeColor, Rgb(0x383835), 45);
-    public static readonly Brush FreeSwatch = Solid(Rgb(0x383835));
-    public static readonly Brush UnreadableFill = Hatch(UnreadableColor, Rgb(0x5a4f4b), 135);
-    public static readonly Brush UnreadableSwatch = Solid(Rgb(0x5a4f4b));
+    // ---- App chrome ----
+    public static Brush WindowBackground { get; private set; } = null!;
+    public static Brush SurfaceBrush { get; private set; } = null!;
+    public static Brush CardBackground { get; private set; } = null!;
+    public static Brush CardBorder { get; private set; } = null!;
+    public static Brush Hairline { get; private set; } = null!;
+    public static Brush TipBackground { get; private set; } = null!;
+    public static Brush TipBorder { get; private set; } = null!;
+    public static Brush BadgeBackground { get; private set; } = null!;
+    public static Brush BarTrack { get; private set; } = null!;
+    public static Brush LinkHover { get; private set; } = null!;
 
-    public static readonly Brush UnknownAgeFill = Cushion(Rgb(0x5e5d58));
-    public static readonly Brush UnknownAgeSwatch = Solid(Rgb(0x5e5d58));
+    public static Brush PrimaryText { get; private set; } = null!;
+    public static Brush SecondaryText { get; private set; } = null!;
+    public static Brush MutedText { get; private set; } = null!;
+    public static Brush AccentText { get; private set; } = null!;
+    public static Brush Accent { get; private set; } = null!;
+
+    /// <summary>Capacity bars for drives that are more than 90% full.</summary>
+    public static Brush CapacityCritical { get; private set; } = null!;
+
+    // ---- Map ----
+    public static Brush FolderBorder { get; private set; } = null!;
+    public static Brush DriveBorder { get; private set; } = null!;
+    public static Brush DriveHeaderFill { get; private set; } = null!;
+    public static Brush SmallFilesFill { get; private set; } = null!;
+    public static Brush SmallFilesSwatch { get; private set; } = null!;
+    public static Brush FreeFill { get; private set; } = null!;
+    public static Brush FreeSwatch { get; private set; } = null!;
+    public static Brush UnreadableFill { get; private set; } = null!;
+    public static Brush UnreadableSwatch { get; private set; } = null!;
+    public static Brush UnknownAgeFill { get; private set; } = null!;
+    public static Brush UnknownAgeSwatch { get; private set; } = null!;
 
     /// <summary>Leaves that don't match the search.</summary>
-    public static readonly Brush DimFill = Solid(Rgb(0x2a2a28));
+    public static Brush DimFill { get; private set; } = null!;
+    public static Brush ProgressTrack { get; private set; } = null!;
 
-    // Status colors for the space-hog badges (always paired with an icon and a label).
-    public static readonly Brush StatusGood = Solid(Rgb(0x0ca30c));
-    public static readonly Brush StatusWarning = Solid(Rgb(0xfab219));
-    public static readonly Brush StatusCritical = Solid(Rgb(0xe66767));
+    public static Pen HoverPen { get; private set; } = null!;
+    public static Pen TargetPen { get; private set; } = null!;
+    public static Pen SelectPen { get; private set; } = null!;
+    public static Pen MatchPen { get; private set; } = null!;
+    public static Brush SelectWash { get; private set; } = null!;
 
-    public static readonly Brush FolderBorder = Solid(Rgb(0x383835));
-    private static readonly Brush[] FolderFills =
-        [Solid(Rgb(0x262624)), Solid(Rgb(0x2e2e2b)), Solid(Rgb(0x353532)), Solid(Rgb(0x2b2b29)), Solid(Rgb(0x32322f))];
+    // Status colors for the space-hog badge icons (always paired with a text label).
+    public static Brush StatusGood { get; private set; } = null!;
+    public static Brush StatusWarning { get; private set; } = null!;
+    public static Brush StatusCritical { get; private set; } = null!;
 
-    public static readonly Brush PrimaryText = Solid(Colors.White);
-    public static readonly Brush SecondaryText = Solid(Rgb(0xc3c2b7));
-    public static readonly Brush MutedText = Solid(Rgb(0x898781));
-    public static readonly Brush DarkText = Solid(Rgb(0x0b0b0b));
+    public static void Apply(bool dark)
+    {
+        IsDark = dark;
+        int[] categories = dark ? CategoryDark : CategoryLight;
+        int[] ages = dark ? AgeDark : AgeLight;
 
-    public static readonly Brush Accent = Solid(Rgb(0x6da7ec));
-    public static readonly Pen HoverPen = Frozen(new Pen(Solid(Colors.White), 2));
-    public static readonly Pen TargetPen = Frozen(new Pen(Solid(Rgb(0x6da7ec)), 2));
-    public static readonly Pen SelectPen = Frozen(new Pen(Solid(Rgb(0xfab219)), 2));
-    public static readonly Pen MatchPen = Frozen(new Pen(Solid(Rgb(0xf0efec)), 1.5));
-    public static readonly Brush SelectWash = Solid(Color.FromArgb(0x40, 0xfa, 0xb2, 0x19));
-    public static readonly Brush ProgressTrack = Solid(Rgb(0x383835));
+        _categoryFills = categories.Select(c => Cushion(Rgb(c))).ToArray();
+        _categorySwatches = categories.Select(c => Solid(Rgb(c))).ToArray();
+        _categoryText = categories.Select(c => TextFor(Rgb(c))).ToArray();
+        _ageFills = ages.Select(c => Cushion(Rgb(c))).ToArray();
+        _ageSwatches = ages.Select(c => Solid(Rgb(c))).ToArray();
+        _ageText = ages.Select(c => TextFor(Rgb(c))).ToArray();
 
-    public static Brush FolderFill(int depth) => FolderFills[depth % FolderFills.Length];
+        StatusGood = Solid(0x0ca30c);
+        StatusWarning = Solid(0xfab219);
+
+        if (dark)
+        {
+            WindowBackground = Solid(0x1a1a19);
+            SurfaceBrush = Solid(0x1e1e1c);
+            CardBackground = Solid(0x242422);
+            CardBorder = Solid(0x383835);
+            Hairline = Solid(0x383835);
+            TipBackground = Solid(Color.FromArgb(0xF2, 0x23, 0x23, 0x21));
+            TipBorder = Solid(0x4a4a46);
+            BadgeBackground = Solid(0x1f2d40);
+            BarTrack = Solid(0x2c2c2a);
+            LinkHover = Solid(0x2e2e2b);
+
+            PrimaryText = Solid(0xffffff);
+            SecondaryText = Solid(0xc3c2b7);
+            MutedText = Solid(0x898781);
+            AccentText = Solid(0x6da7ec);
+            Accent = Solid(0x3987e5);
+            CapacityCritical = Solid(0xe66767);
+
+            _folderFills = [Solid(0x262624), Solid(0x2e2e2b), Solid(0x353532), Solid(0x2b2b29), Solid(0x32322f)];
+            FolderBorder = Solid(0x3d3d3a);
+            DriveBorder = Solid(0x6b6a65);
+            DriveHeaderFill = Solid(0x2f2f2c);
+            SmallFilesFill = Cushion(Rgb(0x5e5d58));
+            SmallFilesSwatch = Solid(0x5e5d58);
+            FreeFill = Hatch(Rgb(0x2a2a28), Rgb(0x383835), 45);
+            FreeSwatch = Solid(0x383835);
+            UnreadableFill = Hatch(Rgb(0x3a3533), Rgb(0x5a4f4b), 135);
+            UnreadableSwatch = Solid(0x5a4f4b);
+            UnknownAgeFill = Cushion(Rgb(0x5e5d58));
+            UnknownAgeSwatch = Solid(0x5e5d58);
+            DimFill = Solid(0x2a2a28);
+            ProgressTrack = Solid(0x383835);
+
+            HoverPen = MakePen(Rgb(0xffffff), 2);
+            TargetPen = MakePen(Rgb(0x6da7ec), 2);
+            SelectPen = MakePen(Rgb(0xfab219), 2);
+            MatchPen = MakePen(Rgb(0xf0efec), 1.5);
+            SelectWash = Solid(Color.FromArgb(0x40, 0xfa, 0xb2, 0x19));
+            StatusCritical = Solid(0xe66767);
+        }
+        else
+        {
+            WindowBackground = Solid(0xf9f9f7);
+            SurfaceBrush = Solid(0xfcfcfb);
+            CardBackground = Solid(0xffffff);
+            CardBorder = Solid(0xe1e0d9);
+            Hairline = Solid(0xe1e0d9);
+            TipBackground = Solid(Color.FromArgb(0xF7, 0xff, 0xff, 0xff));
+            TipBorder = Solid(0xc9c8c0);
+            BadgeBackground = Solid(0xe1ecfb);
+            BarTrack = Solid(0xe8e7e2);
+            LinkHover = Solid(0xefeee9);
+
+            PrimaryText = Solid(0x0b0b0b);
+            SecondaryText = Solid(0x52514e);
+            MutedText = Solid(0x6f6e69);
+            AccentText = Solid(0x1c5cab);
+            Accent = Solid(0x2a78d6);
+            CapacityCritical = Solid(0xd03b3b);
+
+            _folderFills = [Solid(0xf1f0ec), Solid(0xe8e7e2), Solid(0xe0dfd9), Solid(0xecebe6), Solid(0xe4e3dd)];
+            FolderBorder = Solid(0xc9c8c0);
+            DriveBorder = Solid(0x8f8e87);
+            DriveHeaderFill = Solid(0xe3e2dc);
+            SmallFilesFill = Cushion(Rgb(0xb4b3ac));
+            SmallFilesSwatch = Solid(0xb4b3ac);
+            FreeFill = Hatch(Rgb(0xf3f2ee), Rgb(0xdcdbd4), 45);
+            FreeSwatch = Solid(0xdcdbd4);
+            UnreadableFill = Hatch(Rgb(0xece4e1), Rgb(0xcdbfb9), 135);
+            UnreadableSwatch = Solid(0xcdbfb9);
+            UnknownAgeFill = Cushion(Rgb(0xb4b3ac));
+            UnknownAgeSwatch = Solid(0xb4b3ac);
+            DimFill = Solid(0xeeede9);
+            ProgressTrack = Solid(0xdcdbd4);
+
+            HoverPen = MakePen(Rgb(0x0b0b0b), 2);
+            TargetPen = MakePen(Rgb(0x2a78d6), 2);
+            SelectPen = MakePen(Rgb(0xc98500), 2);
+            MatchPen = MakePen(Rgb(0x0b0b0b), 1.5);
+            SelectWash = Solid(Color.FromArgb(0x40, 0xed, 0xa1, 0x00));
+            StatusCritical = Solid(0xd03b3b);
+        }
+    }
+
+    public static Brush FolderFill(int depth) => _folderFills[depth % _folderFills.Length];
 
     public static Brush Fill(FsNode node, ColorMode mode, long nowTicks) => node.Kind switch
     {
-        NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(AgeFills, UnknownAgeFill, node, nowTicks),
-        NodeKind.File => CategoryFills[(int)node.Category],
+        NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(_ageFills, UnknownAgeFill, node, nowTicks),
+        NodeKind.File => _categoryFills[(int)node.Category],
         NodeKind.SmallFiles => SmallFilesFill,
         NodeKind.FreeSpace => FreeFill,
         NodeKind.Unreadable => UnreadableFill,
@@ -98,15 +201,25 @@ public static class Theme
 
     public static Brush LabelBrush(FsNode node, ColorMode mode, long nowTicks) => node.Kind switch
     {
-        NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(AgeText, PrimaryText, node, nowTicks),
-        NodeKind.File => CategoryText[(int)node.Category],
-        NodeKind.SmallFiles => PrimaryText,
+        NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(_ageText, PrimaryText, node, nowTicks),
+        NodeKind.File => _categoryText[(int)node.Category],
+        NodeKind.SmallFiles => IsDark ? PrimaryText : DarkInk,
         _ => SecondaryText,
     };
 
-    public static Brush Swatch(FileCategory c) => CategorySwatches[(int)c];
+    public static Brush Swatch(FileCategory c) => _categorySwatches[(int)c];
 
-    public static Brush AgeSwatch(int bucket) => bucket >= 0 ? AgeSwatches[bucket] : UnknownAgeSwatch;
+    public static Brush AgeSwatch(int bucket) => bucket >= 0 ? _ageSwatches[bucket] : UnknownAgeSwatch;
+
+    public static Brush Swatch(FsNode node, ColorMode mode, long nowTicks) => node.Kind switch
+    {
+        NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(_ageSwatches, UnknownAgeSwatch, node, nowTicks),
+        NodeKind.File => _categorySwatches[(int)node.Category],
+        NodeKind.SmallFiles => SmallFilesSwatch,
+        NodeKind.FreeSpace => FreeSwatch,
+        NodeKind.Unreadable => UnreadableSwatch,
+        _ => FolderBorder,
+    };
 
     private static Brush AgeBrush(Brush[] brushes, Brush unknown, FsNode node, long nowTicks)
     {
@@ -114,19 +227,15 @@ public static class Theme
         return bucket >= 0 ? brushes[bucket] : unknown;
     }
 
-    public static Brush Swatch(FsNode node, ColorMode mode, long nowTicks) => node.Kind switch
-    {
-        NodeKind.File or NodeKind.SmallFiles when mode == ColorMode.Age => AgeBrush(AgeSwatches, UnknownAgeSwatch, node, nowTicks),
-        NodeKind.File => CategorySwatches[(int)node.Category],
-        NodeKind.SmallFiles => SmallFilesSwatch,
-        NodeKind.FreeSpace => FreeSwatch,
-        NodeKind.Unreadable => UnreadableSwatch,
-        _ => FolderBorder,
-    };
+    private static readonly Brush DarkInk = Solid(0x0b0b0b);
 
     private static Color Rgb(int rgb) => Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb);
 
+    private static Brush Solid(int rgb) => Solid(Rgb(rgb));
+
     private static Brush Solid(Color c) => Frozen(new SolidColorBrush(c));
+
+    private static Pen MakePen(Color c, double thickness) => Frozen(new Pen(Solid(c), thickness));
 
     /// <summary>Subtle top-left highlight so adjacent same-colored files read as separate blocks.</summary>
     private static Brush Cushion(Color c)
@@ -156,11 +265,11 @@ public static class Theme
         return Frozen(brush);
     }
 
+    /// <summary>Whichever of near-black or white ink has more contrast against the fill.</summary>
     private static Brush TextFor(Color c)
     {
         static double Lin(byte v) { double s = v / 255.0; return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4); }
         double lum = 0.2126 * Lin(c.R) + 0.7152 * Lin(c.G) + 0.0722 * Lin(c.B);
-        // Pick whichever ink has higher contrast against the fill.
         double vsWhite = 1.05 / (lum + 0.05);
         double vsBlack = (lum + 0.05) / 0.05;
         return vsBlack >= vsWhite ? Solid(Rgb(0x0b0b0b)) : Solid(Colors.White);

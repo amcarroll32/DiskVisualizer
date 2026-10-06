@@ -23,6 +23,8 @@ internal sealed class LayoutItem(FsNode node, Rect rect)
 public sealed class TreemapControl : FrameworkElement
 {
     private const double HeaderHeight = 16;
+    private const double DriveHeaderHeight = 34; // title line + capacity bar
+    private const double DriveGap = 3;           // space around each drive in the overview
     private const int MaxLabels = 3000;
 
     private readonly DrawingVisual _mapVisual = new();
@@ -31,6 +33,7 @@ public sealed class TreemapControl : FrameworkElement
     private readonly DispatcherTimer _resizeTimer;
     private readonly Typeface _regular = new("Segoe UI");
     private readonly Typeface _semibold = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+    private readonly Typeface _icons = new("Segoe Fluent Icons, Segoe MDL2 Assets");
 
     private LayoutItem? _layout;
     private FsNode? _root;
@@ -289,7 +292,7 @@ public sealed class TreemapControl : FrameworkElement
                 {
                     DrawScanning(dc, _root, bounds, 0);
                 }
-                else if (!LayoutChildren(dc, _layout, Inset(bounds, 2), 0, SearchMatcher.IsInsideMatch(_root, _filter)))
+                else if (!LayoutChildren(dc, _layout, ContentArea(dc, bounds), 0, SearchMatcher.IsInsideMatch(_root, _filter)))
                 {
                     string message = _root.Kind == NodeKind.Root ? "Looking for drives…"
                         : _root.AccessDenied ? "This folder couldn't be read (access denied)."
@@ -306,6 +309,17 @@ public sealed class TreemapControl : FrameworkElement
             HoverChanged?.Invoke(this, null);
         }
         RenderOverlay();
+    }
+
+    /// <summary>The area the current root's children fill; a drive keeps its title band on top.</summary>
+    private Rect ContentArea(DrawingContext dc, Rect bounds)
+    {
+        if (_root!.Kind != NodeKind.Drive || bounds.Height < 120)
+            return Inset(bounds, 2);
+        var band = new Rect(bounds.X, bounds.Y, bounds.Width, DriveHeaderHeight + 2);
+        dc.DrawRectangle(Theme.DriveBorder, null, new Rect(band.X, band.Bottom - 1, band.Width, 1));
+        double bottom = DrawDriveHeader(dc, _root, band, dim: false);
+        return new Rect(bounds.X + 2, bottom + 4, bounds.Width - 4, Math.Max(0, bounds.Bottom - bottom - 6));
     }
 
     private bool LayoutChildren(DrawingContext dc, LayoutItem parent, Rect area, int depth, bool lit)
@@ -403,6 +417,10 @@ public sealed class TreemapControl : FrameworkElement
     /// <param name="lit">An ancestor matched the search (or there is no search).</param>
     private void DrawNode(DrawingContext dc, LayoutItem parent, FsNode node, Rect rect, int depth, bool lit)
     {
+        // Drives in the overview get breathing room so each reads as its own disk.
+        if (node.Kind == NodeKind.Drive && rect.Width > 4 * DriveGap && rect.Height > 4 * DriveGap)
+            rect = Inset(rect, DriveGap);
+
         var r = Snap(rect);
         if (r.Width < Px || r.Height < Px)
             return;
@@ -419,6 +437,10 @@ public sealed class TreemapControl : FrameworkElement
             // Free space and unreadable blocks can't match a name search.
             bool synthetic = node.Kind is NodeKind.FreeSpace or NodeKind.Unreadable;
             DrawLeaf(dc, node, r, nodeLit && !(synthetic && _filter != null));
+        }
+        else if (node.Kind == NodeKind.Drive && r.Width >= 90 && r.Height >= 64)
+        {
+            DrawDrive(dc, item, r, depth, nodeLit);
         }
         else if (node.IsScanning)
         {
@@ -460,6 +482,73 @@ public sealed class TreemapControl : FrameworkElement
 
         if (content.Width >= 2 && content.Height >= 2)
             LayoutChildren(dc, item, content, depth + 1, lit);
+    }
+
+    /// <summary>A drive tile: heavier frame, title band with icon and capacity, then its contents.</summary>
+    private void DrawDrive(DrawingContext dc, LayoutItem item, Rect r, int depth, bool lit)
+    {
+        var node = item.Node;
+        dc.DrawRectangle(Theme.DriveBorder, null, r);
+        var inner = Inset(r, 2);
+        if (inner.IsEmpty)
+            return;
+        dc.DrawRectangle(Theme.FolderFill(depth), null, inner);
+
+        bool onTrail = _filterTrail != null && _filterTrail.Contains(node);
+        double bottom = DrawDriveHeader(dc, node, new Rect(inner.X, inner.Y, inner.Width, DriveHeaderHeight), dim: _filter != null && !lit && !onTrail);
+        var content = new Rect(inner.X + 2, bottom + 2, inner.Width - 4, Math.Max(0, inner.Bottom - bottom - 4));
+
+        if (node.IsScanning)
+        {
+            if (content.Height > 24)
+            {
+                string status = node.ScanError != null ? "Scan failed" : "Scanning…";
+                DrawCentered(dc, status, content, Theme.MutedText, 12);
+            }
+            return;
+        }
+        if (content.Width >= 2 && content.Height >= 2)
+            LayoutChildren(dc, item, content, depth + 1, lit);
+    }
+
+    /// <summary>Draws the drive title band into <paramref name="band"/> and returns its bottom edge.</summary>
+    private double DrawDriveHeader(DrawingContext dc, FsNode node, Rect band, bool dim)
+    {
+        dc.DrawRectangle(Theme.DriveHeaderFill, null, band);
+        _labelBudget--;
+
+        var ink = dim ? Theme.MutedText : Theme.PrimaryText;
+        double x = band.X + 8;
+        var icon = new FormattedText(node.IsRemovable ? "\uE88E" : "\uEDA2", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+            _icons, 14, ink, _pixelsPerDip);
+        dc.DrawText(icon, new Point(x, band.Y + 6));
+        x += 22;
+
+        long capacity = node.Capacity > 0 ? node.Capacity : node.Size;
+        long used = Math.Max(0, capacity - node.FreeSize);
+        double usedFraction = capacity > 0 ? (double)used / capacity : 0;
+
+        string stats = node.IsScanning
+            ? node.ScanError != null ? "scan failed" : $"scanning… {node.ScanProgress:P0}"
+            : $"{Format.Bytes(used)} used of {Format.Bytes(capacity)}  ·  {Format.Bytes(node.FreeSize)} free";
+        var statsText = MakeText(stats, Theme.SecondaryText, 11, false, Math.Max(1, band.Width * 0.55));
+        bool showStats = band.Width >= 280;
+
+        double titleWidth = band.Right - 8 - x - (showStats ? statsText.Width + 14 : 0);
+        if (titleWidth >= 10)
+            dc.DrawText(MakeText(node.DisplayName, ink, 13, true, titleWidth), new Point(x, band.Y + 4));
+        if (showStats)
+            dc.DrawText(statsText, new Point(band.Right - 8 - statsText.Width, band.Y + 6));
+
+        // Capacity bar (or scan progress while scanning); red when the drive is over 90% full.
+        var bar = new Rect(band.X + 8, band.Y + DriveHeaderHeight - 10, Math.Max(0, band.Width - 16), 4);
+        double fraction = node.IsScanning ? node.ScanProgress : usedFraction;
+        var fill = !node.IsScanning && usedFraction > 0.9 ? Theme.CapacityCritical : Theme.Accent;
+        dc.DrawRoundedRectangle(Theme.ProgressTrack, null, bar, 2, 2);
+        if (fraction > 0)
+            dc.DrawRoundedRectangle(fill, null, new Rect(bar.X, bar.Y, bar.Width * Math.Clamp(fraction, 0, 1), bar.Height), 2, 2);
+
+        return band.Y + DriveHeaderHeight;
     }
 
     private void DrawLeaf(DrawingContext dc, FsNode node, Rect r, bool lit)

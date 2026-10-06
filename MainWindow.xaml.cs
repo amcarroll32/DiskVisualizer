@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using DiskVisualizer.Model;
+using DiskVisualizer.Platform;
 using DiskVisualizer.Scanning;
 using DiskVisualizer.Treemap;
 
@@ -36,6 +37,18 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ApplyThemeResources();
+
+        if (Elevation.IsElevated)
+        {
+            bool backup = Elevation.TryEnableBackupPrivilege();
+            Title += " (Administrator)";
+            ElevateButton.Visibility = Visibility.Collapsed;
+            AdminBadge.Visibility = Visibility.Visible;
+            AdminBadge.ToolTip = backup
+                ? "Running as administrator with the backup privilege on, so protected folders are read too. Still read-only."
+                : "Running as administrator, but the backup privilege couldn't be enabled, so some system folders may still be unreadable.";
+        }
 
         Map.HoverChanged += Map_HoverChanged;
         Map.NodeClicked += Map_NodeClicked;
@@ -72,6 +85,7 @@ public partial class MainWindow : Window
         _elapsed = Stopwatch.StartNew();
         _lastScanFinished = TimeSpan.Zero;
         _hogsCts?.Cancel();
+        _hogs = [];
         HogsList.ItemsSource = null;
         HogsTab.Header = "Space hogs";
         HogsSummary.Text = "Space hogs are listed as drives finish scanning…";
@@ -100,7 +114,7 @@ public partial class MainWindow : Window
             HogsSummary.Text = "No drives were scanned.";
     }
 
-    private sealed record DriveProbe(string Name, string Label, long TotalSize, long FreeSize);
+    private sealed record DriveProbe(string Name, string Label, long TotalSize, long FreeSize, bool IsRemovable);
 
     /// <summary>
     /// Checks a drive on a background thread (an unready drive can take 20+ seconds to say so),
@@ -113,7 +127,7 @@ public partial class MainWindow : Window
             try
             {
                 return drive.IsReady
-                    ? new DriveProbe(drive.Name, drive.VolumeLabel, drive.TotalSize, drive.TotalFreeSpace)
+                    ? new DriveProbe(drive.Name, drive.VolumeLabel, drive.TotalSize, drive.TotalFreeSpace, drive.DriveType == DriveType.Removable)
                     : null;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -137,6 +151,8 @@ public partial class MainWindow : Window
         {
             Label = probe.Label,
             Size = probe.TotalSize,
+            Capacity = probe.TotalSize,
+            IsRemovable = probe.IsRemovable,
             FreeSize = probe.FreeSize,
             IsScanning = true,
         };
@@ -240,7 +256,9 @@ public partial class MainWindow : Window
             string text = $"Scanned {Format.Count(_scanners.Count, "drive", "drives")} in {Format.Duration(_lastScanFinished)}  ·  " +
                           $"{Format.Count(files)} files  ·  {Format.Count(dirs)} folders";
             if (denied > 0)
-                text += $"  ·  {Format.Count(denied, "folder", "folders")} couldn't be read (counted as Unreadable / other)";
+                text += Elevation.IsElevated
+                    ? $"  ·  {Format.Count(denied, "folder", "folders")} still couldn't be read"
+                    : $"  ·  {Format.Count(denied, "folder", "folders")} couldn't be read (counted as Unreadable / other) – Run as admin to include them";
             var failed = _scanners.Where(s => s.Drive.ScanError != null).ToList();
             if (failed.Count > 0)
                 text += $"  ·  failed: {string.Join(", ", failed.Select(f => f.Drive.Name))}";
@@ -314,13 +332,13 @@ public partial class MainWindow : Window
             {
                 Breadcrumbs.Children.Add(new TextBlock
                 {
-                    Text = "",
+                    Text = "\uE76C",
                     FontFamily = (FontFamily)FindResource("Icons"),
                     FontSize = 10,
-                    Foreground = (Brush)FindResource("InkMuted"),
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(2, 0, 2, 0),
                 });
+                ((TextBlock)Breadcrumbs.Children[^1]).SetResourceReference(TextBlock.ForegroundProperty, "InkMuted");
             }
 
             var button = new Button
@@ -349,7 +367,10 @@ public partial class MainWindow : Window
         FontWeight NameWeight,
         GridLength BarFilled,
         GridLength BarEmpty,
-        Brush BarBrush);
+        Brush BarBrush,
+        string Glyph = "",
+        Visibility GlyphVisibility = Visibility.Collapsed,
+        Visibility SwatchVisibility = Visibility.Visible);
 
     private sealed record LegendItem(string Name, Brush Swatch, string SizeText, string PercentText);
 
@@ -370,6 +391,31 @@ public partial class MainWindow : Window
             new GridLength(Math.Max(fraction, 0.0001), GridUnitType.Star),
             new GridLength(Math.Max(1 - fraction, 0.0001), GridUnitType.Star),
             folder ? Theme.Accent : swatch);
+    }
+
+    /// <summary>A drive row reads like Explorer's: free space, and a bar showing how full it is.</summary>
+    private static RowItem MakeDriveRow(FsNode drive)
+    {
+        long used = Math.Max(0, drive.Capacity - drive.FreeSize);
+        double full = drive.Capacity > 0 ? (double)used / drive.Capacity : 0;
+        string detail = drive.IsScanning
+            ? drive.ScanError != null ? "scan failed" : $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  scanning…"
+            : $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  {Format.Count(drive.FileCount)} files";
+        return new RowItem(
+            drive,
+            drive.DisplayName,
+            $"{Format.Bytes(drive.FreeSize)} free",
+            detail,
+            Brushes.Transparent,
+            Brushes.Transparent,
+            new Thickness(0),
+            FontWeights.SemiBold,
+            new GridLength(Math.Max(full, 0.0001), GridUnitType.Star),
+            new GridLength(Math.Max(1 - full, 0.0001), GridUnitType.Star),
+            full > 0.9 ? Theme.CapacityCritical : Theme.Accent,
+            drive.IsRemovable ? "\uE88E" : "\uEDA2",
+            Visibility.Visible,
+            Visibility.Collapsed);
     }
 
     private void RefreshSidePanel()
@@ -394,15 +440,46 @@ public partial class MainWindow : Window
 
             foreach (var c in visible)
             {
+                if (c.Kind == NodeKind.Drive)
+                {
+                    rows.Add(MakeDriveRow(c));
+                    continue;
+                }
                 long size = Map.DisplaySize(c);
                 double fraction = viewSize > 0 ? (double)size / viewSize : 0;
                 rows.Add(MakeRow(c, size, fraction, $"{Format.Percent(fraction)}  ·  {DescribeShort(c, now)}", now));
             }
         }
         ContentsList.ItemsSource = rows;
+        ShowCapacity(node);
 
         LegendTitle.Text = _colorMode == ColorMode.Age ? "SPACE BY AGE (LAST MODIFIED)" : "SPACE BY TYPE";
         Legend.ItemsSource = BuildLegend(node, viewSize, now);
+    }
+
+    /// <summary>Capacity bar under the title for a drive, or for all drives combined.</summary>
+    private void ShowCapacity(FsNode node)
+    {
+        long capacity, free;
+        if (node.Kind == NodeKind.Drive)
+        {
+            (capacity, free) = (node.Capacity, node.FreeSize);
+        }
+        else if (node.Kind == NodeKind.Root && node.Children!.Count > 0)
+        {
+            (capacity, free) = (node.Children!.Sum(d => d.Capacity), node.Children!.Sum(d => d.FreeSize));
+        }
+        else
+        {
+            ViewCapacity.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        double full = capacity > 0 ? Math.Clamp((double)(capacity - free) / capacity, 0, 1) : 0;
+        CapacityUsed.Width = new GridLength(full, GridUnitType.Star);
+        CapacityFree.Width = new GridLength(1 - full, GridUnitType.Star);
+        CapacityBar.Background = full > 0.9 ? Theme.CapacityCritical : Theme.Accent;
+        ViewCapacity.Visibility = Visibility.Visible;
     }
 
     private string DescribeView(FsNode node)
@@ -411,12 +488,12 @@ public partial class MainWindow : Window
         {
             case NodeKind.Root:
             {
-                long total = node.Children!.Sum(d => d.Size);
+                long total = node.Children!.Sum(d => d.Capacity);
                 string text = $"{Format.Bytes(total - node.FreeSize)} used of {Format.Bytes(total)} across {Format.Count(node.Children!.Count, "drive", "drives")}";
                 return node.FileCount > 0 ? text + $"\n{Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" : text;
             }
             case NodeKind.Drive:
-                return $"{Format.Bytes(node.Size - node.FreeSize)} used of {Format.Bytes(node.Size)}  ·  {Format.Bytes(node.FreeSize)} free\n" +
+                return $"{Format.Bytes(node.Capacity - node.FreeSize)} used of {Format.Bytes(node.Capacity)}  ·  {Format.Bytes(node.FreeSize)} free\n" +
                        $"{Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" + DeniedSuffix(node);
             default:
                 if (node.AccessDenied)
@@ -703,6 +780,18 @@ public partial class MainWindow : Window
         if (cts.IsCancellationRequested || pc != _pc)
             return;
 
+        _hogs = hogs;
+        ShowHogs();
+    }
+
+    private List<HogResult> _hogs = [];
+
+    private void ShowHogs()
+    {
+        var pc = _pc;
+        if (pc == null)
+            return;
+        var hogs = _hogs;
         int scanning = pc.Children!.Count(d => d.IsScanning && d.ScanError == null) + _probing.Count;
         long safe = hogs.Where(h => h.Rule.Safety == HogSafety.Safe).Sum(h => h.Size);
         string summary = hogs.Count == 0
@@ -720,9 +809,9 @@ public partial class MainWindow : Window
     {
         var (glyph, badge, brush) = hog.Rule.Safety switch
         {
-            HogSafety.Safe => ("", "Safe to clear", Theme.StatusGood),
-            HogSafety.Caution => ("", "Review before deleting", Theme.StatusWarning),
-            _ => ("", "Don't delete manually", Theme.StatusCritical),
+            HogSafety.Safe => ("\uE73E", "Safe to clear", Theme.StatusGood),
+            HogSafety.Caution => ("\uE7BA", "Review before deleting", Theme.StatusWarning),
+            _ => ("\uE711", "Don't delete manually", Theme.StatusCritical),
         };
         string action = hog.Rule.Action switch
         {
@@ -829,8 +918,11 @@ public partial class MainWindow : Window
             NodeKind.File => FileCategories.DisplayName(node.Category),
             NodeKind.SmallFiles => $"{Format.Count(node.FileCount)} files under {Format.Bytes(DriveScanner.SmallFileThreshold)}, grouped together.",
             NodeKind.FreeSpace => "Unused space on this drive.",
+            NodeKind.Unreadable when Elevation.IsElevated =>
+                "Used space not attributed to any file: mostly NTFS metadata (the master file table and journal) " +
+                "and differences from hard-linked or compressed files.",
             NodeKind.Unreadable => "Used space that couldn't be traced to readable files: protected system folders, " +
-                                   "other users' profiles, NTFS metadata, restore points, and similar.",
+                                   "other users' profiles, NTFS metadata, restore points, and similar. Run as admin to include most of it.",
             _ => "",
         };
         TipAge.Text = node.Kind switch
@@ -884,23 +976,23 @@ public partial class MainWindow : Window
         var target = Map.ClickTarget(node);
 
         if (target != null && CanOpen(target))
-            menu.Items.Add(MenuItem($"Zoom into “{target.DisplayName}”", "", () => NavigateTo(target)));
+            menu.Items.Add(MenuItem($"Zoom into “{target.DisplayName}”", "\uE71E", () => NavigateTo(target)));
 
         if (node.HasRealPath && !node.IsScanning)
         {
-            menu.Items.Add(MenuItem(node.Kind == NodeKind.File ? "Show in Explorer" : "Open in Explorer", "", () => OpenInExplorer(node)));
-            menu.Items.Add(MenuItem("Copy path", "", () => CopyPath(node)));
+            menu.Items.Add(MenuItem(node.Kind == NodeKind.File ? "Show in Explorer" : "Open in Explorer", "\uE838", () => OpenInExplorer(node)));
+            menu.Items.Add(MenuItem("Copy path", "\uE8C8", () => CopyPath(node)));
         }
         else if (!node.HasRealPath && node.Parent is { HasRealPath: true } parent)
         {
-            menu.Items.Add(MenuItem("Open containing folder", "", () => OpenInExplorer(parent)));
+            menu.Items.Add(MenuItem("Open containing folder", "\uE838", () => OpenInExplorer(parent)));
         }
 
         if (_current?.Parent != null)
         {
             if (menu.Items.Count > 0)
                 menu.Items.Add(new Separator());
-            menu.Items.Add(MenuItem("Up one level", "", GoUp));
+            menu.Items.Add(MenuItem("Up one level", "\uE74A", GoUp));
         }
 
         if (menu.Items.Count == 0)
@@ -994,6 +1086,60 @@ public partial class MainWindow : Window
     // ---- Toolbar & keyboard ----
 
     private void Up_Click(object sender, RoutedEventArgs e) => GoUp();
+
+    private void Theme_Click(object sender, RoutedEventArgs e)
+    {
+        bool dark = !Theme.IsDark;
+        App.ApplyTheme(dark);
+        App.Settings.Theme = dark ? "Dark" : "Light";
+        App.Settings.Save();
+
+        ApplyThemeResources();
+        Map.Invalidate();
+        RefreshSidePanel();
+        RefreshQuery();
+        if (_hogs.Count > 0)
+            ShowHogs();
+    }
+
+    /// <summary>Pushes the current palette into the window's brush resources (used via DynamicResource).</summary>
+    private void ApplyThemeResources()
+    {
+        Resources["WindowBg"] = Theme.WindowBackground;
+        Resources["Hairline"] = Theme.Hairline;
+        Resources["InkPrimary"] = Theme.PrimaryText;
+        Resources["InkSecondary"] = Theme.SecondaryText;
+        Resources["InkMuted"] = Theme.MutedText;
+        Resources["AccentInk"] = Theme.AccentText;
+        Resources["AccentFill"] = Theme.Accent;
+        Resources["CardBg"] = Theme.CardBackground;
+        Resources["CardBorder"] = Theme.CardBorder;
+        Resources["TipBg"] = Theme.TipBackground;
+        Resources["TipBorder"] = Theme.TipBorder;
+        Resources["BadgeBg"] = Theme.BadgeBackground;
+        Resources["BarTrack"] = Theme.BarTrack;
+        Resources["LinkHover"] = Theme.LinkHover;
+
+        // The button shows the mode you'd switch to.
+        ThemeGlyph.Text = Theme.IsDark ? "\uE706" : "\uE708";
+        ThemeButton.ToolTip = Theme.IsDark ? "Switch to light mode" : "Switch to dark mode";
+    }
+
+    private void Elevate_Click(object sender, RoutedEventArgs e)
+    {
+        switch (Elevation.RelaunchElevated(out string? error))
+        {
+            case Elevation.RelaunchResult.Started:
+                Close(); // the elevated copy takes over
+                break;
+            case Elevation.RelaunchResult.Cancelled:
+                StatusText.Text = "Administrator restart was cancelled; still running as a normal user.";
+                break;
+            default:
+                StatusText.Text = $"Couldn't restart as administrator: {error}";
+                break;
+        }
+    }
 
     private void Rescan_Click(object sender, RoutedEventArgs e) => StartScan();
 

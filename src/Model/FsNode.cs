@@ -54,6 +54,11 @@ public sealed class FsNode
 
     public string? Label { get; set; }
 
+    /// <summary>Drive capacity as reported by Windows (drives only).</summary>
+    public long Capacity { get; set; }
+
+    public bool IsRemovable { get; set; }
+
     // Drive scan state (UI thread only).
     public bool IsScanning { get; set; }
     public double ScanProgress { get; set; }
