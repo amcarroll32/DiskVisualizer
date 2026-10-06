@@ -9,10 +9,16 @@
     <RootNamespace>DiskVisualizer</RootNamespace>
     <AssemblyName>DiskVisualizer</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Regenerate with tools/make-icon.ps1 -->
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
     <!-- Fluent theme (Application.ThemeMode) is flagged experimental -->
     <NoWarn>$(NoWarn);WPF0001</NoWarn>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <TieredPGO>true</TieredPGO>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets/app.ico" />
+  </ItemGroup>
 
 </Project>

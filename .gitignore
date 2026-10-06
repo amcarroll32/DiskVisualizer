@@ -9,3 +9,6 @@ publish/
 .idea/
 *.user
 *.suo
+
+# WPF temporary project files left by interrupted builds
+*_wpftmp.csproj
