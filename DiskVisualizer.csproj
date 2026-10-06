@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DiskVisualizer</RootNamespace>
+    <AssemblyName>DiskVisualizer</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Fluent theme (Application.ThemeMode) is flagged experimental -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+</Project>

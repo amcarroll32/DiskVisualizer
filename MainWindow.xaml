@@ -1,0 +1,321 @@
+<Window x:Class="DiskVisualizer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:tm="clr-namespace:DiskVisualizer.Treemap"
+        Title="Disk Visualizer"
+        Width="1440" Height="900" MinWidth="1040" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="#1a1a19"
+        UseLayoutRounding="True">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="Hairline" Color="#383835" />
+        <SolidColorBrush x:Key="InkSecondary" Color="#c3c2b7" />
+        <SolidColorBrush x:Key="InkMuted" Color="#898781" />
+        <SolidColorBrush x:Key="AccentInk" Color="#6da7ec" />
+        <FontFamily x:Key="Icons">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+
+        <Style x:Key="CrumbButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+
+        <Style x:Key="SmallButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,0,6,6" />
+        </Style>
+
+        <!-- A flat, full-width clickable row (space-hog locations). -->
+        <Style x:Key="LinkRow" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{StaticResource AccentInk}" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="Transparent" CornerRadius="4" Padding="4,2">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#2e2e2b" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RowStyle" TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Padding" Value="8,4" />
+            <EventSetter Event="MouseEnter" Handler="Row_MouseEnter" />
+            <EventSetter Event="MouseLeave" Handler="Row_MouseLeave" />
+            <EventSetter Event="MouseDoubleClick" Handler="Row_DoubleClick" />
+        </Style>
+
+        <!-- Shared by the Contents and Largest lists. -->
+        <DataTemplate x:Key="RowTemplate">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Border Width="11" Height="11" CornerRadius="2" Margin="0,0,9,0" VerticalAlignment="Center"
+                        Background="{Binding SwatchFill}" BorderBrush="{Binding SwatchStroke}" BorderThickness="{Binding SwatchThickness}" />
+                <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis"
+                           FontWeight="{Binding NameWeight}" />
+                <TextBlock Grid.Column="2" Text="{Binding SizeText}" Margin="10,0,0,0" />
+                <Grid Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Height="3" Margin="0,4,0,3">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="{Binding BarFilled}" />
+                        <ColumnDefinition Width="{Binding BarEmpty}" />
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.ColumnSpan="2" Background="#2c2c2a" CornerRadius="1.5" />
+                    <Border Background="{Binding BarBrush}" CornerRadius="1.5" />
+                </Grid>
+                <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Detail}"
+                           FontSize="11" Foreground="{StaticResource InkMuted}" TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Detail}" />
+            </Grid>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Padding="10,8" BorderThickness="0,0,0,1" BorderBrush="{StaticResource Hairline}">
+            <DockPanel LastChildFill="True">
+                <Button x:Name="UpButton" DockPanel.Dock="Left" Click="Up_Click" ToolTip="Up one level (Backspace)"
+                        Padding="10,6" IsEnabled="False">
+                    <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE74A;" FontSize="14" />
+                </Button>
+                <Button x:Name="RescanButton" DockPanel.Dock="Left" Margin="6,0,14,0" Click="Rescan_Click"
+                        ToolTip="Rescan all drives (F5)" Padding="10,6">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE72C;" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Text="Rescan" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <CheckBox x:Name="FreeSpaceCheck" DockPanel.Dock="Right" Content="Free space" IsChecked="True"
+                          VerticalAlignment="Center" Margin="12,0,0,0" ToolTip="Show free space on the map"
+                          Checked="FreeSpace_Changed" Unchecked="FreeSpace_Changed" />
+                <ComboBox x:Name="ColorModeBox" DockPanel.Dock="Right" Width="138" Margin="10,0,0,0" VerticalAlignment="Center"
+                          SelectionChanged="ColorMode_Changed" ToolTip="Color files by type or by last-modified date">
+                    <ComboBoxItem Content="Color: Type" IsSelected="True" />
+                    <ComboBoxItem Content="Color: Age" />
+                </ComboBox>
+                <Grid DockPanel.Dock="Right" Width="270" Margin="10,0,0,0" VerticalAlignment="Center">
+                    <TextBox x:Name="SearchBox" Padding="32,5,8,6" VerticalContentAlignment="Center"
+                             TextChanged="SearchBox_TextChanged" PreviewKeyDown="SearchBox_PreviewKeyDown"
+                             ToolTip="Name contains text · *.mp4 / log?.txt wildcards · .iso extension  (Ctrl+F, Esc to clear)" />
+                    <TextBlock Text="&#xE721;" FontFamily="{StaticResource Icons}" FontSize="13" IsHitTestVisible="False"
+                               Margin="11,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource InkMuted}" />
+                    <TextBlock x:Name="SearchPlaceholder" Text="Search: name, *.mp4, .iso" IsHitTestVisible="False"
+                               Margin="33,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource InkMuted}" />
+                </Grid>
+                <TextBlock x:Name="SearchSummary" DockPanel.Dock="Right" VerticalAlignment="Center" MaxWidth="260"
+                           TextTrimming="CharacterEllipsis" Foreground="{StaticResource InkSecondary}" Margin="10,0,0,0" />
+
+                <ScrollViewer x:Name="CrumbScroller" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                              VerticalAlignment="Center">
+                    <StackPanel x:Name="Breadcrumbs" Orientation="Horizontal" />
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+        <!-- Map + side panel -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="300" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="400" MinWidth="300" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0" Margin="8,8,0,8">
+                <tm:TreemapControl x:Name="Map" Cursor="Hand" />
+                <Canvas IsHitTestVisible="False" ClipToBounds="True">
+                    <Border x:Name="Tip" Visibility="Collapsed" Background="#F2232321" BorderBrush="#4a4a46"
+                            BorderThickness="1" CornerRadius="6" Padding="12,9" MaxWidth="440">
+                        <StackPanel>
+                            <TextBlock x:Name="TipTitle" FontWeight="SemiBold" FontSize="13" Foreground="White"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock x:Name="TipSize" Foreground="White" Margin="0,3,0,0" />
+                            <TextBlock x:Name="TipDetail" Foreground="{StaticResource InkSecondary}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            <TextBlock x:Name="TipAge" Foreground="{StaticResource InkSecondary}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            <TextBlock x:Name="TipPath" Foreground="{StaticResource InkMuted}" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0" />
+                            <TextBlock x:Name="TipHint" Foreground="{StaticResource AccentInk}" FontSize="11" Margin="0,6,0,0" />
+                        </StackPanel>
+                    </Border>
+                </Canvas>
+            </Grid>
+
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          Background="Transparent" ResizeBehavior="PreviousAndNext" />
+
+            <DockPanel Grid.Column="2" Margin="0,8,8,8">
+                <StackPanel DockPanel.Dock="Top" Margin="6,2,6,8">
+                    <TextBlock x:Name="ViewTitle" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="ViewSubtitle" Foreground="{StaticResource InkSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                </StackPanel>
+
+                <!-- Legend -->
+                <Border x:Name="LegendPanel" DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="{StaticResource Hairline}"
+                        Padding="6,8,6,0" Margin="0,8,0,0">
+                    <StackPanel>
+                        <TextBlock x:Name="LegendTitle" Text="SPACE BY TYPE" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource InkMuted}" Margin="0,0,0,4" />
+                        <ItemsControl x:Name="Legend">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,1">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="52" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="11" Height="11" CornerRadius="2" Background="{Binding Swatch}"
+                                                VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="2" Text="{Binding SizeText}" Margin="8,0,0,0" />
+                                        <TextBlock Grid.Column="3" Text="{Binding PercentText}" Foreground="{StaticResource InkMuted}"
+                                                   HorizontalAlignment="Right" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <TabControl x:Name="SideTabs" SelectionChanged="SideTabs_SelectionChanged" Background="Transparent" BorderThickness="0" Padding="0,6,0,0">
+                    <!-- Contents of the current folder -->
+                    <TabItem x:Name="ContentsTab" Header="Contents">
+                        <ListBox x:Name="ContentsList" ItemContainerStyle="{StaticResource RowStyle}" ItemTemplate="{StaticResource RowTemplate}"
+                                 Background="Transparent" BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                 SelectionChanged="List_SelectionChanged" KeyDown="List_KeyDown" />
+                    </TabItem>
+
+                    <!-- Largest files / folders in the current view -->
+                    <TabItem x:Name="LargestTab" Header="Largest">
+                        <DockPanel>
+                            <Grid DockPanel.Dock="Top" Margin="2,2,2,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="1.4*" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="LargestModeBox" SelectionChanged="LargestOptions_Changed">
+                                    <ComboBoxItem Content="Files" IsSelected="True" />
+                                    <ComboBoxItem Content="Folders" />
+                                </ComboBox>
+                                <ComboBox x:Name="LargestTypeBox" Grid.Column="2" SelectionChanged="LargestOptions_Changed" />
+                            </Grid>
+                            <TextBlock x:Name="LargestCaption" DockPanel.Dock="Top" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{StaticResource InkMuted}" Margin="6,2,6,6" />
+                            <ListBox x:Name="LargestList" ItemContainerStyle="{StaticResource RowStyle}" ItemTemplate="{StaticResource RowTemplate}"
+                                     Background="Transparent" BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                     SelectionChanged="List_SelectionChanged" KeyDown="List_KeyDown" />
+                        </DockPanel>
+                    </TabItem>
+
+                    <!-- Well-known space consumers across all drives -->
+                    <TabItem x:Name="HogsTab" Header="Space hogs">
+                        <DockPanel>
+                            <TextBlock x:Name="HogsSummary" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="6,2,6,8"
+                                       Foreground="{StaticResource InkSecondary}" />
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                                <ItemsControl x:Name="HogsList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="2,0,2,8" Padding="12,10,12,6" CornerRadius="6" Background="#242422"
+                                                    BorderBrush="#383835" BorderThickness="1">
+                                                <StackPanel>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding SizeText}" FontWeight="SemiBold" Margin="10,0,0,0" />
+                                                    </Grid>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                        <TextBlock Text="{Binding BadgeGlyph}" FontFamily="{StaticResource Icons}" FontSize="12"
+                                                                   Foreground="{Binding BadgeBrush}" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding BadgeText}" FontSize="12" FontWeight="SemiBold"
+                                                                   Foreground="{Binding BadgeBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding Advice}" TextWrapping="Wrap" FontSize="12" Margin="0,6,0,6"
+                                                               Foreground="{StaticResource InkSecondary}" />
+                                                    <ItemsControl ItemsSource="{Binding Locations}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <Button Style="{StaticResource LinkRow}" Tag="{Binding Node}" Click="HogLocation_Click"
+                                                                        ToolTip="Show on the map">
+                                                                    <Grid>
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <TextBlock Text="{Binding Path}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Grid.Column="1" Text="{Binding SizeText}" FontSize="11" Margin="8,0,0,0"
+                                                                                   Foreground="{StaticResource InkMuted}" />
+                                                                    </Grid>
+                                                                </Button>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                    <TextBlock Text="{Binding MoreText}" Visibility="{Binding MoreVisibility}" FontSize="11"
+                                                               Foreground="{StaticResource InkMuted}" Margin="4,2,0,0" />
+                                                    <WrapPanel Margin="0,8,0,0">
+                                                        <Button Style="{StaticResource SmallButton}" Content="Open in Explorer"
+                                                                Tag="{Binding}" Click="HogExplorer_Click" />
+                                                        <Button Style="{StaticResource SmallButton}" Content="{Binding ActionText}"
+                                                                Visibility="{Binding ActionVisibility}" Tag="{Binding}" Click="HogAction_Click" />
+                                                        <Button Style="{StaticResource SmallButton}" Content="Find all"
+                                                                Visibility="{Binding FindAllVisibility}" Tag="{Binding}" Click="HogFindAll_Click" />
+                                                    </WrapPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </DockPanel>
+        </Grid>
+
+        <!-- Status bar -->
+        <Border Grid.Row="2" BorderThickness="0,1,0,0" BorderBrush="{StaticResource Hairline}" Padding="12,6">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Right" Foreground="{StaticResource InkMuted}" Margin="16,0,0,0"
+                           Text="Click: zoom in  ·  Right-click: options  ·  Backspace: up  ·  Ctrl+F: search  ·  F5: rescan" />
+                <TextBlock x:Name="StatusText" Foreground="{StaticResource InkSecondary}" TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>
