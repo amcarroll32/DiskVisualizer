@@ -2,6 +2,10 @@
 
 A fast, read-only Windows app that scans every fixed and removable drive and shows where the space went as an interactive treemap.
 
+**No ads, no spyware, no installer. Just a simple tool that shows where your disk space went.** It never connects to the internet and never changes your files.
+
+**[Download the latest version](https://github.com/amcarroll32/DiskVisualizer/releases/latest)**: a single portable exe for 64-bit Windows 10 and 11.
+
 ![treemap of all drives](docs/screenshot.png)
 
 ## Features
