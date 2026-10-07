@@ -12,6 +12,7 @@ A fast, read-only Windows app that scans every fixed and removable drive and sho
 
 - **All drives at once.** Box area is proportional to size; folders nest inside folders, files are colored by type. Free space and "Unreadable / other" blocks make each drive's area match its real capacity.
 - **Fast, parallel scan.** Runs as a normal user; protected folders show up as "Unreadable / other". Roughly 2.3 million files across 6 drives in about 8 seconds with a warm cache. Drives appear as they finish, and a slow or unready drive doesn't block the others.
+- **Local drives only, by default.** Network shares and cloud-sync drives such as Google Drive are skipped automatically, and so are virtual drive letters with no local disk behind them. The **Drives** menu lets you include them or untick any drive; your choices are remembered.
 - **Run as admin (optional).** One click restarts the app elevated with the backup privilege on, so protected folders (System Volume Information, other users' profiles, …) are included. On the author's PC that took "Unreadable / other" from about 60 GB to 1.3 GB. Still read-only.
 - **Drives stand out.** Each drive is framed with its own title band and capacity bar; drives over 90% full turn red.
 - **Drive type and health.** Icons show SSD, hard drive, USB stick or memory card. A green strip means Windows reports the disk healthy; yellow or red with ⚠ means Warning or Unhealthy. Each drive letter shows which physical disk it's on (model, connection, and any other partitions on the same disk). No admin rights needed.

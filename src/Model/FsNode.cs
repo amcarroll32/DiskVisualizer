@@ -65,6 +65,18 @@ public sealed class FsNode
     /// <summary>Physical disk, device kind and health (drives only; null until the disk query finishes).</summary>
     public DriveHardware? Hardware { get; set; }
 
+    /// <summary>Drives only: local disk, network share, or cloud/virtual drive.</summary>
+    public DriveSource Source { get; set; }
+
+    /// <summary>
+    /// Network and cloud drives report the capacity of whatever is behind them (a server's whole
+    /// volume, a cloud quota, or the host disk for subst), so only their scanned content is shown.
+    /// </summary>
+    public bool IsContentOnlyDrive => Kind == NodeKind.Drive && Source != DriveSource.Local;
+
+    /// <summary>A placeholder for a drive that was skipped (network, cloud, or unticked by the user).</summary>
+    public bool NotScanned { get; set; }
+
     // Drive scan state (UI thread only).
     public bool IsScanning { get; set; }
     public double ScanProgress { get; set; }

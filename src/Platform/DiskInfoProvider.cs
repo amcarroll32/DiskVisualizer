@@ -3,6 +3,11 @@ using DiskVisualizer.Model;
 
 namespace DiskVisualizer.Platform;
 
+/// <param name="Succeeded">False when Windows couldn't be asked; nothing can then be concluded from a missing letter.</param>
+/// <param name="ByLetter">Drive letter → the physical disk it lives on.</param>
+/// <param name="PartitionLetters">Every drive letter backed by a real disk partition (including Storage Spaces and VHDs).</param>
+public sealed record DiskQuery(bool Succeeded, Dictionary<char, PhysicalDisk> ByLetter, HashSet<char> PartitionLetters);
+
 /// <summary>
 /// Reads physical disks and their partitions from the Windows Storage Management API
 /// (the same data as Get-PhysicalDisk / Get-Partition). Works without admin rights.
@@ -11,8 +16,8 @@ public static class DiskInfoProvider
 {
     private const string StorageNamespace = @"\\.\root\Microsoft\Windows\Storage";
 
-    /// <summary>Maps each drive letter to the physical disk it lives on. Empty if the query fails.</summary>
-    public static Dictionary<char, PhysicalDisk> Query()
+    /// <summary>Maps drive letters to partitions and physical disks.</summary>
+    public static DiskQuery Query()
     {
         try
         {
@@ -22,6 +27,7 @@ public static class DiskInfoProvider
             var options = new EnumerationOptions { Timeout = TimeSpan.FromSeconds(20) };
 
             var letters = new Dictionary<int, List<char>>();
+            var partitionLetters = new HashSet<char>();
             foreach (var p in Select(scope, options, "SELECT DriveLetter, DiskNumber FROM MSFT_Partition"))
             {
                 if (p["DriveLetter"] is not char letter || letter == '\0' || p["DiskNumber"] is not uint diskNumber)
@@ -29,6 +35,7 @@ public static class DiskInfoProvider
                 if (!letters.TryGetValue((int)diskNumber, out var list))
                     letters[(int)diskNumber] = list = [];
                 list.Add(char.ToUpperInvariant(letter));
+                partitionLetters.Add(char.ToUpperInvariant(letter));
             }
 
             var byLetter = new Dictionary<char, PhysicalDisk>();
@@ -47,12 +54,12 @@ public static class DiskInfoProvider
                 foreach (char l in diskLetters)
                     byLetter[l] = disk;
             }
-            return byLetter;
+            return new DiskQuery(true, byLetter, partitionLetters);
         }
         catch (Exception ex) when (ex is ManagementException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException
                                        or TimeoutException or PlatformNotSupportedException)
         {
-            return [];
+            return new DiskQuery(false, [], []);
         }
     }
 

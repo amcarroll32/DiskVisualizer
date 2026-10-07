@@ -532,8 +532,10 @@ public sealed class TreemapControl : FrameworkElement
         long used = Math.Max(0, capacity - node.FreeSize);
         double usedFraction = capacity > 0 ? (double)used / capacity : 0;
 
+        bool contentOnly = node.IsContentOnlyDrive;
         string stats = node.IsScanning
-            ? node.ScanError != null ? "scan failed" : $"scanning… {node.ScanProgress:P0}"
+            ? node.ScanError != null ? "scan failed" : contentOnly ? "scanning…" : $"scanning… {node.ScanProgress:P0}"
+            : contentOnly ? $"{Format.Bytes(node.Size)} of files"
             : $"{Format.Bytes(used)} used of {Format.Bytes(capacity)}  ·  {Format.Bytes(node.FreeSize)} free";
         if (!node.IsScanning && node.Hardware != null && band.Width >= 520)
             stats += "  ·  " + node.Hardware.KindLabel;
@@ -555,7 +557,8 @@ public sealed class TreemapControl : FrameworkElement
         double Room(FormattedText? stats) => band.Right - 8 - x - alertWidth - (stats != null ? stats.Width + 14 : 0);
         if (showStats && Room(statsText) < nameWidth && !node.IsScanning)
         {
-            statsText = MakeText($"{Format.Bytes(node.FreeSize)} free", Theme.SecondaryText, 11, false, Math.Max(1, band.Width * 0.55));
+            string shortStats = contentOnly ? Format.Bytes(node.Size) : $"{Format.Bytes(node.FreeSize)} free";
+            statsText = MakeText(shortStats, Theme.SecondaryText, 11, false, Math.Max(1, band.Width * 0.55));
             if (Room(statsText) < nameWidth)
                 showStats = false;
         }
@@ -574,6 +577,10 @@ public sealed class TreemapControl : FrameworkElement
         }
         if (showStats)
             dc.DrawText(statsText, new Point(band.Right - 8 - statsText.Width, band.Y + 6));
+
+        // Network and cloud drives have no meaningful capacity (or scan progress) to show.
+        if (contentOnly)
+            return band.Y + DriveHeaderHeight;
 
         // Capacity bar (or scan progress while scanning); red when the drive is over 90% full.
         var bar = new Rect(band.X + 8, band.Y + DriveHeaderHeight - 10, Math.Max(0, band.Width - 16), 4);

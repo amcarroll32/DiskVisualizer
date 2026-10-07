@@ -267,6 +267,18 @@ public sealed class DriveScanner
         Drive.DirCount = _totals.Dirs;
         Drive.DeniedCount = _totals.Denied;
         Drive.LastWrite = _totals.Newest;
+
+        if (Drive.IsContentOnlyDrive)
+        {
+            // No free-space or "unreadable" blocks: the reported capacity isn't this drive's own.
+            children.Sort((a, b) => b.Size.CompareTo(a.Size));
+            Drive.Size = scanned;
+            Drive.FreeSize = 0;
+            Drive.IsScanning = false;
+            Drive.ScanProgress = 1;
+            return;
+        }
+
         long unreadable = Math.Max(0, UsedSize - scanned);
 
         if (unreadable > 0)

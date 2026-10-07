@@ -199,6 +199,8 @@ public static class Theme
             DriveKind.Ssd => "\uE964",
             DriveKind.UsbDrive => "\uE88E",
             DriveKind.MemoryCard => "\uE7F1",
+            DriveKind.Network => "\uE8CE",
+            DriveKind.Cloud => "\uE753",
             _ => "\uEDA2",
         };
 

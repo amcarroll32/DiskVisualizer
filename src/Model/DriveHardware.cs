@@ -10,6 +10,19 @@ public enum DriveKind
     Ssd,
     UsbDrive,
     MemoryCard,
+    Network,
+    Cloud,
+}
+
+/// <summary>
+/// Where a drive letter's data really lives. Cloud-sync drives (Google Drive, pCloud…) and
+/// subst aliases claim to be local disks, but no disk partition backs them.
+/// </summary>
+public enum DriveSource
+{
+    Local,
+    Network,
+    Virtual,
 }
 
 /// <summary>Windows' own health verdict for a physical disk (MSFT_PhysicalDisk.HealthStatus).</summary>
@@ -31,7 +44,7 @@ public sealed record PhysicalDisk(
     IReadOnlyList<char> Letters);
 
 /// <summary>Hardware details attached to a drive node once the disk query finishes.</summary>
-public sealed record DriveHardware(DriveKind Kind, PhysicalDisk? Disk, char Letter)
+public sealed record DriveHardware(DriveKind Kind, PhysicalDisk? Disk, char Letter, string? NetworkPath = null)
 {
     private static readonly Regex CardReaderName = new(
         @"\b(sd|sdhc|sdxc|micro\s?sd|mmc|cf|xd|card|reader|multi-?card|memory\s?stick)\b",
@@ -46,8 +59,13 @@ public sealed record DriveHardware(DriveKind Kind, PhysicalDisk? Disk, char Lett
     /// SD and MMC buses are unambiguous. Cards in USB readers look like any USB stick, so a reader
     /// with a card-ish name, or a removable volume with a camera's DCIM folder, counts as a card.
     /// </summary>
-    public static DriveHardware Classify(char letter, PhysicalDisk? disk, bool removable, bool hasDcimFolder)
+    public static DriveHardware Classify(char letter, DriveSource source, string? networkPath, PhysicalDisk? disk, bool removable, bool hasDcimFolder)
     {
+        if (source == DriveSource.Network)
+            return new DriveHardware(DriveKind.Network, null, letter, networkPath);
+        if (source == DriveSource.Virtual)
+            return new DriveHardware(DriveKind.Cloud, null, letter);
+
         string bus = disk?.Bus ?? "";
         string media = disk?.MediaType ?? "";
 
@@ -84,6 +102,8 @@ public sealed record DriveHardware(DriveKind Kind, PhysicalDisk? Disk, char Lett
         DriveKind.Hdd => string.IsNullOrEmpty(Disk?.Bus) ? "Hard drive" : $"{Disk!.Bus} hard drive",
         DriveKind.UsbDrive => "USB drive",
         DriveKind.MemoryCard => "Memory card",
+        DriveKind.Network => "Network drive",
+        DriveKind.Cloud => "Cloud or virtual drive",
         _ => "Drive",
     };
 
@@ -100,6 +120,10 @@ public sealed record DriveHardware(DriveKind Kind, PhysicalDisk? Disk, char Lett
     {
         get
         {
+            if (Kind == DriveKind.Network)
+                return NetworkPath != null ? $"Network drive  ·  {NetworkPath}" : "Network drive";
+            if (Kind == DriveKind.Cloud)
+                return "Cloud or virtual drive (no local disk behind it)  ·  sizes may include files stored only online";
             if (Disk == null)
                 return KindLabel;
             string line = $"Disk {Disk.Number}  ·  {Disk.Model}  ·  {KindLabel}";

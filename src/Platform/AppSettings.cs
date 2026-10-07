@@ -19,6 +19,12 @@ public sealed class AppSettings
     /// <summary>"Light", "Dark", or null to follow Windows.</summary>
     public string? Theme { get; set; }
 
+    /// <summary>Scan network and cloud/virtual drives too (off by default: local drives only).</summary>
+    public bool IncludeNetworkDrives { get; set; }
+
+    /// <summary>Per-drive overrides, e.g. {"G:": true, "D:": false}; drives not listed follow the default.</summary>
+    public Dictionary<string, bool> DriveChoices { get; set; } = [];
+
     public static AppSettings Load()
     {
         // The portable file wins; the per-user file covers read-only locations and older versions.

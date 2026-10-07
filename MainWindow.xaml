@@ -4,7 +4,7 @@
         xmlns:tm="clr-namespace:DiskVisualizer.Treemap"
         Title="Disk Visualizer"
         Icon="Assets/app.ico"
-        Width="1440" Height="900" MinWidth="1120" MinHeight="560"
+        Width="1440" Height="900" MinWidth="1200" MinHeight="560"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource WindowBg}"
         UseLayoutRounding="True">
@@ -142,6 +142,14 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE72C;" FontSize="14" VerticalAlignment="Center" />
                         <TextBlock Text="Rescan" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Button x:Name="DrivesButton" DockPanel.Dock="Left" Margin="0,0,6,0" Click="DrivesButton_Click" Padding="10,6"
+                        ToolTip="Choose which drives to scan. Network and cloud drives are skipped unless you include them.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEDA2;" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Text="Drives" Margin="8,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE70D;" FontSize="10" Margin="7,2,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
                 <Button x:Name="ElevateButton" DockPanel.Dock="Left" Margin="0,0,14,0" Click="Elevate_Click" Padding="10,6"

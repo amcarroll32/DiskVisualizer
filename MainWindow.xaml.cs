@@ -32,8 +32,33 @@ public partial class MainWindow : Window
     private Stopwatch _elapsed = new();
     private TimeSpan _lastScanFinished;
     private readonly List<string> _probing = [];
-    private readonly List<string> _notReady = [];
     private Dictionary<char, PhysicalDisk>? _disks;
+    private DiskQuery? _diskQuery;
+    private List<DriveEntry> _entries = [];
+    private int _activeBatches;
+
+    /// <summary>A drive letter found on this PC, whether or not it's being scanned.</summary>
+    private sealed class DriveEntry(DriveInfo info, DriveSource source, string? networkPath)
+    {
+        public DriveInfo Info { get; } = info;
+        public string Name => Info.Name;
+        public string Key => Info.Name[..2].ToUpperInvariant(); // "C:"
+        public DriveSource Source { get; set; } = source;
+        public string? NetworkPath { get; } = networkPath;
+
+        /// <summary>Included and handed to a scan (which may still be probing, scanning, or have found it not ready).</summary>
+        public bool Active { get; set; }
+        public bool NotReady { get; set; }
+        public FsNode? Node { get; set; }
+        public CancellationTokenSource? Cts { get; set; }
+
+        public string SourceLabel => Source switch
+        {
+            DriveSource.Network => "network",
+            DriveSource.Virtual => "cloud / virtual",
+            _ => "local",
+        };
+    }
 
     public MainWindow()
     {
@@ -82,7 +107,10 @@ public partial class MainWindow : Window
         _pc = pc;
         _scanners = [];
         _probing.Clear();
-        _notReady.Clear();
+        foreach (var old in _entries)
+            old.Cts?.Cancel();
+        _entries = [];
+        _activeBatches = 0;
         _elapsed = Stopwatch.StartNew();
         _lastScanFinished = TimeSpan.Zero;
         _hogsCts?.Cancel();
@@ -91,47 +119,125 @@ public partial class MainWindow : Window
         HogsTab.Header = "Space hogs";
         HogsSummary.Text = "Space hogs are listed as drives finish scanning…";
         _disks = null;
+        _diskQuery = null;
         NavigateTo(pc);
         _progressTimer.Start();
         UpdateStatus();
-        LoadDiskInfo(pc);
 
-        // Even listing drive types can stall on a misbehaving device, so stay off the UI thread.
-        var drives = await Task.Run(() => DriveInfo.GetDrives()
-            .Where(d => d.DriveType is DriveType.Fixed or DriveType.Removable)
-            .ToList());
+        // Listing drives and asking Windows which letters sit on real disk partitions is quick,
+        // and it lets network and cloud drives be skipped without ever touching them (an offline
+        // one can take 20+ seconds just to say it isn't ready). Off the UI thread regardless.
+        var (entries, query) = await Task.Run(() =>
+        {
+            var q = DiskInfoProvider.Query();
+            var list = DriveInfo.GetDrives()
+                .Where(d => d.DriveType is DriveType.Fixed or DriveType.Removable or DriveType.Network)
+                .Select(d => new DriveEntry(d, ClassifySource(d, q),
+                    d.DriveType == DriveType.Network ? NetworkDrives.RemotePath(d.Name) : null))
+                .ToList();
+            return (list, q);
+        });
         if (cts.IsCancellationRequested)
             return;
+#if DEBUG
+        query = query with { ByLetter = FakeHealthForTesting(query.ByLetter) };
+#endif
+        _diskQuery = query;
+        _disks = query.ByLetter;
+        _entries = entries;
+        RefreshSidePanel();
 
-        _probing.AddRange(drives.Select(d => d.Name));
-        UpdateStatus();
+        await ScanEntries(entries.Where(IsIncluded).ToList(), pc, cts.Token);
+    }
 
-        await Task.WhenAll(drives.Select(d => ProbeAndScan(d, pc, cts.Token)));
+    /// <summary>
+    /// Network drives say so. Cloud-sync drives and subst aliases claim to be local fixed disks,
+    /// but no disk partition backs them. (Removable drives are always local; an empty card reader
+    /// has no partition either.)
+    /// </summary>
+    private static DriveSource ClassifySource(DriveInfo drive, DiskQuery query)
+    {
+        if (drive.DriveType == DriveType.Network)
+            return DriveSource.Network;
+        if (drive.DriveType == DriveType.Fixed && query.Succeeded && !query.PartitionLetters.Contains(char.ToUpperInvariant(drive.Name[0])))
+            return DriveSource.Virtual;
+        return DriveSource.Local;
+    }
 
-        if (cts.IsCancellationRequested)
-            return;
-        _elapsed.Stop();
-        _progressTimer.Stop();
+    /// <summary>File systems a real local disk would have; anything else on a "fixed" drive is virtual.</summary>
+    private static bool IsLocalFileSystem(string? format) =>
+        format is not null && (format.Equals("NTFS", StringComparison.OrdinalIgnoreCase) || format.Equals("ReFS", StringComparison.OrdinalIgnoreCase)
+            || format.StartsWith("FAT", StringComparison.OrdinalIgnoreCase) || format.Equals("exFAT", StringComparison.OrdinalIgnoreCase)
+            || format.Equals("UDF", StringComparison.OrdinalIgnoreCase));
+
+    private static bool DefaultIncluded(DriveEntry entry) =>
+        entry.Source == DriveSource.Local || App.Settings.IncludeNetworkDrives;
+
+    private static bool IsIncluded(DriveEntry entry) =>
+        App.Settings.DriveChoices.TryGetValue(entry.Key, out bool choice) ? choice : DefaultIncluded(entry);
+
+    /// <summary>Remembers a per-drive choice only when it differs from the default.</summary>
+    private static void SetIncluded(DriveEntry entry, bool include)
+    {
+        if (include == DefaultIncluded(entry))
+            App.Settings.DriveChoices.Remove(entry.Key);
+        else
+            App.Settings.DriveChoices[entry.Key] = include;
+    }
+
+    /// <summary>Probes and scans a set of drives; can run again later when drives are added from the Drives menu.</summary>
+    private async Task ScanEntries(List<DriveEntry> entries, FsNode pc, CancellationToken ct)
+    {
+        if (entries.Count > 0)
+        {
+            if (_activeBatches == 0)
+            {
+                _elapsed = Stopwatch.StartNew();
+                _progressTimer.Start();
+            }
+            _activeBatches++;
+            foreach (var entry in entries)
+            {
+                entry.Active = true;
+                entry.NotReady = false;
+                entry.Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                _probing.Add(entry.Name);
+            }
+            UpdateStatus();
+
+            await Task.WhenAll(entries.Select(e => ProbeAndScan(e, pc, e.Cts!.Token)));
+
+            if (ct.IsCancellationRequested || pc != _pc)
+                return;
+            _activeBatches--;
+        }
+
+        if (_activeBatches == 0)
+        {
+            _elapsed.Stop();
+            _progressTimer.Stop();
+        }
         UpdateStatus();
         if (_scanners.Count == 0)
             HogsSummary.Text = "No drives were scanned.";
     }
 
-    private sealed record DriveProbe(string Name, string Label, long TotalSize, long FreeSize, bool IsRemovable, bool HasDcim);
+    private sealed record DriveProbe(string Name, string Label, long TotalSize, long FreeSize, bool IsRemovable, bool HasDcim, string? Format);
 
     /// <summary>
     /// Checks a drive on a background thread (an unready drive can take 20+ seconds to say so),
     /// then adds it to the overview and scans it. Drives appear as soon as they respond.
     /// </summary>
-    private async Task ProbeAndScan(DriveInfo drive, FsNode pc, CancellationToken ct)
+    private async Task ProbeAndScan(DriveEntry entry, FsNode pc, CancellationToken ct)
     {
+        var drive = entry.Info;
         var probe = await Task.Run(() =>
         {
             try
             {
                 return drive.IsReady
                     ? new DriveProbe(drive.Name, drive.VolumeLabel, drive.TotalSize, drive.TotalFreeSpace, drive.DriveType == DriveType.Removable,
-                        drive.DriveType == DriveType.Removable && Directory.Exists(Path.Join(drive.Name, "DCIM")))
+                        drive.DriveType == DriveType.Removable && Directory.Exists(Path.Join(drive.Name, "DCIM")), drive.DriveFormat)
                     : null;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -140,29 +246,51 @@ public partial class MainWindow : Window
             }
         });
 
-        if (ct.IsCancellationRequested || pc != _pc)
+        if (pc != _pc)
             return;
-
         _probing.Remove(drive.Name);
+        if (ct.IsCancellationRequested)
+        {
+            UpdateStatus(); // unticked in the Drives menu while probing
+            return;
+        }
         if (probe == null)
         {
-            _notReady.Add(drive.Name);
+            entry.NotReady = true;
             UpdateStatus();
             return;
         }
 
+        // Fallback when Windows couldn't list partitions: a "fixed" drive with an unusual file
+        // system is a cloud or virtual drive.
+        if (_diskQuery?.Succeeded != true && entry.Source == DriveSource.Local && drive.DriveType == DriveType.Fixed
+            && !IsLocalFileSystem(probe.Format))
+        {
+            entry.Source = DriveSource.Virtual;
+            if (!IsIncluded(entry))
+            {
+                entry.Active = false;
+                RefreshSidePanel();
+                UpdateStatus();
+                return;
+            }
+        }
+
+        bool local = entry.Source == DriveSource.Local;
         var node = new FsNode(probe.Name, NodeKind.Drive, pc)
         {
             Label = probe.Label,
-            Size = probe.TotalSize,
-            Capacity = probe.TotalSize,
+            Size = local ? probe.TotalSize : 0,
+            Capacity = local ? probe.TotalSize : 0,
             IsRemovable = probe.IsRemovable,
             HasDcimFolder = probe.HasDcim,
-            FreeSize = probe.FreeSize,
+            FreeSize = local ? probe.FreeSize : 0,
             IsScanning = true,
+            Source = entry.Source,
         };
+        entry.Node = node;
         pc.Children!.Add(node);
-        ApplyHardware(node);
+        ApplyHardware(node, entry);
         var scanner = new DriveScanner(node, probe.TotalSize, probe.FreeSize);
         _scanners.Add(scanner);
         RecomputeRoot(pc);
@@ -201,29 +329,12 @@ public partial class MainWindow : Window
         UpdateStatus();
     }
 
-    /// <summary>Physical disks, partitions and health come from a separate (sometimes slow) Windows query.</summary>
-    private async void LoadDiskInfo(FsNode pc)
+    private void ApplyHardware(FsNode drive, DriveEntry entry)
     {
-        var disks = await Task.Run(DiskInfoProvider.Query);
-#if DEBUG
-        disks = FakeHealthForTesting(disks);
-#endif
-        if (pc != _pc)
-            return;
-        _disks = disks;
-        foreach (var drive in pc.Children!)
-            ApplyHardware(drive);
-        Map.Invalidate();
-        RefreshSidePanel();
-    }
-
-    private void ApplyHardware(FsNode drive)
-    {
-        if (_disks == null)
-            return;
         char letter = char.ToUpperInvariant(drive.Name[0]);
-        _disks.TryGetValue(letter, out var disk);
-        drive.Hardware = DriveHardware.Classify(letter, disk, drive.IsRemovable, drive.HasDcimFolder);
+        PhysicalDisk? disk = null;
+        _disks?.TryGetValue(letter, out disk);
+        drive.Hardware = DriveHardware.Classify(letter, entry.Source, entry.NetworkPath, disk, drive.IsRemovable, drive.HasDcimFolder);
     }
 
 #if DEBUG
@@ -270,7 +381,8 @@ public partial class MainWindow : Window
             if (!s.Drive.IsScanning || s.Drive.ScanError != null)
                 continue;
             anyScanning = true;
-            s.Drive.ScanProgress = s.UsedSize > 0 ? Math.Min(0.99, (double)s.ScannedBytes / s.UsedSize) : 0;
+            if (!s.Drive.IsContentOnlyDrive)
+                s.Drive.ScanProgress = s.UsedSize > 0 ? Math.Min(0.99, (double)s.ScannedBytes / s.UsedSize) : 0;
         }
 
         // Only the overview shows live progress tiles.
@@ -288,11 +400,18 @@ public partial class MainWindow : Window
         var active = _scanners.Where(s => s.Drive.IsScanning && s.Drive.ScanError == null).ToList();
         string waiting = _probing.Count > 0 ? $"  ·  waiting for {string.Join(", ", _probing)} to respond" : "";
 
+        var skipped = _entries.Where(e => !IsIncluded(e)).ToList();
+        string skippedText = skipped.Count > 0
+            ? $"  ·  skipped: {string.Join(", ", skipped.Select(e => $"{e.Key} ({e.SourceLabel})"))}"
+            : "";
+
         if (_scanners.Count == 0)
         {
-            StatusText.Text = _probing.Count > 0 || _elapsed.IsRunning
+            StatusText.Text = _probing.Count > 0 || _activeBatches > 0 || (_elapsed.IsRunning && _entries.Count == 0)
                 ? "Looking for drives…" + waiting
-                : "No ready fixed or removable drives found.";
+                : _entries.Count > 0 && skipped.Count == _entries.Count
+                    ? "No drives selected. Use Drives to choose what to scan." + skippedText
+                    : "No ready drives found." + skippedText;
         }
         else if (active.Count > 0)
         {
@@ -303,7 +422,7 @@ public partial class MainWindow : Window
         else
         {
             string text = $"Scanned {Format.Count(_scanners.Count, "drive", "drives")} in {Format.Duration(_lastScanFinished)}  ·  " +
-                          $"{Format.Count(files)} files  ·  {Format.Count(dirs)} folders";
+                          $"{Format.Count(files)} files  ·  {Format.Count(dirs)} folders" + skippedText;
             if (denied > 0)
                 text += Elevation.IsElevated
                     ? $"  ·  {Format.Count(denied, "folder", "folders")} still couldn't be read"
@@ -311,8 +430,9 @@ public partial class MainWindow : Window
             var failed = _scanners.Where(s => s.Drive.ScanError != null).ToList();
             if (failed.Count > 0)
                 text += $"  ·  failed: {string.Join(", ", failed.Select(f => f.Drive.Name))}";
-            if (_notReady.Count > 0)
-                text += $"  ·  not ready: {string.Join(", ", _notReady)}";
+            var notReady = _entries.Where(e => e.Active && e.NotReady).Select(e => e.Name).ToList();
+            if (notReady.Count > 0)
+                text += $"  ·  not ready: {string.Join(", ", notReady)}";
             StatusText.Text = text + waiting;
         }
     }
@@ -337,7 +457,7 @@ public partial class MainWindow : Window
             NavigateTo(parent);
     }
 
-    private bool CanOpen(FsNode node) => node.IsContainer && !node.IsScanning && node.ScanError == null;
+    private bool CanOpen(FsNode node) => node.IsContainer && !node.IsScanning && node.ScanError == null && !node.NotScanned;
 
     private void TryOpen(FsNode node)
     {
@@ -454,18 +574,24 @@ public partial class MainWindow : Window
     /// <summary>A drive row reads like Explorer's: free space, and a bar showing how full it is.</summary>
     private static RowItem MakeDriveRow(FsNode drive)
     {
+        bool contentOnly = drive.IsContentOnlyDrive;
         long used = Math.Max(0, drive.Capacity - drive.FreeSize);
-        double full = drive.Capacity > 0 ? (double)used / drive.Capacity : 0;
-        string detail = drive.IsScanning
-            ? drive.ScanError != null ? "scan failed" : $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  scanning…"
-            : $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  {Format.Count(drive.FileCount)} files";
+        double full = !contentOnly && drive.Capacity > 0 ? (double)used / drive.Capacity : 0;
+        string detail = (drive.IsScanning, contentOnly) switch
+        {
+            (true, _) when drive.ScanError != null => "scan failed",
+            (true, true) => "scanning…",
+            (true, false) => $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  scanning…",
+            (false, true) => $"{Format.Bytes(drive.Size)} of files  ·  {Format.Count(drive.FileCount)} files",
+            _ => $"{Format.Bytes(used)} used of {Format.Bytes(drive.Capacity)}  ·  {Format.Count(drive.FileCount)} files",
+        };
         var hw = drive.Hardware;
         var health = hw?.Health ?? DiskHealth.Unknown;
         var healthBrush = Theme.HealthBrush(health);
         return new RowItem(
             drive,
             drive.DisplayName,
-            $"{Format.Bytes(drive.FreeSize)} free",
+            contentOnly ? (drive.IsScanning ? "" : Format.Bytes(drive.Size)) : $"{Format.Bytes(drive.FreeSize)} free",
             detail,
             Brushes.Transparent,
             Brushes.Transparent,
@@ -473,7 +599,7 @@ public partial class MainWindow : Window
             FontWeights.SemiBold,
             new GridLength(Math.Max(full, 0.0001), GridUnitType.Star),
             new GridLength(Math.Max(1 - full, 0.0001), GridUnitType.Star),
-            full > 0.9 ? Theme.CapacityCritical : Theme.Accent,
+            contentOnly ? Brushes.Transparent : full > 0.9 ? Theme.CapacityCritical : Theme.Accent,
             Theme.DriveGlyph(drive),
             Visibility.Visible,
             Visibility.Collapsed,
@@ -481,8 +607,41 @@ public partial class MainWindow : Window
             healthBrush != null ? Visibility.Visible : Visibility.Collapsed,
             hw?.HealthLabel ?? "",
             health is DiskHealth.Warning or DiskHealth.Unhealthy ? Visibility.Visible : Visibility.Collapsed,
-            hw != null ? $"{hw.HealthLabel}  ·  {hw.DiskLine}" : "",
+            hw == null ? "" : contentOnly ? hw.DiskLine : $"{hw.HealthLabel}  ·  {hw.DiskLine}",
             hw != null ? Visibility.Visible : Visibility.Collapsed);
+    }
+
+    /// <summary>A muted row for a drive that isn't scanned, saying why and how to include it.</summary>
+    private RowItem MakeSkippedRow(DriveEntry entry)
+    {
+        var stub = new FsNode(entry.Name, NodeKind.Drive, null) { NotScanned = true, Source = entry.Source };
+        string why = entry.Source switch
+        {
+            DriveSource.Network => entry.NetworkPath != null ? $"Network drive ({entry.NetworkPath})" : "Network drive",
+            DriveSource.Virtual => "Cloud or virtual drive (no local disk behind it)",
+            _ => "Unticked in Drives",
+        };
+        string glyph = entry.Source switch
+        {
+            DriveSource.Network => "\uE8CE",
+            DriveSource.Virtual => "\uE753",
+            _ => "\uEDA2",
+        };
+        return new RowItem(
+            stub,
+            entry.Key,
+            "not scanned",
+            $"{why}  ·  skipped. Double-click or use Drives to include it.",
+            Brushes.Transparent,
+            Brushes.Transparent,
+            new Thickness(0),
+            FontWeights.Normal,
+            new GridLength(0.0001, GridUnitType.Star),
+            new GridLength(1, GridUnitType.Star),
+            Brushes.Transparent,
+            glyph,
+            Visibility.Visible,
+            Visibility.Collapsed);
     }
 
     private void RefreshSidePanel()
@@ -517,6 +676,8 @@ public partial class MainWindow : Window
                 rows.Add(MakeRow(c, size, fraction, $"{Format.Percent(fraction)}  ·  {DescribeShort(c, now)}", now));
             }
         }
+        if (node.Kind == NodeKind.Root)
+            rows.AddRange(_entries.Where(e => !IsIncluded(e)).Select(MakeSkippedRow));
         ContentsList.ItemsSource = rows;
         ShowCapacity(node);
 
@@ -528,11 +689,11 @@ public partial class MainWindow : Window
     private void ShowCapacity(FsNode node)
     {
         long capacity, free;
-        if (node.Kind == NodeKind.Drive)
+        if (node.Kind == NodeKind.Drive && !node.IsContentOnlyDrive)
         {
             (capacity, free) = (node.Capacity, node.FreeSize);
         }
-        else if (node.Kind == NodeKind.Root && node.Children!.Count > 0)
+        else if (node.Kind == NodeKind.Root && node.Children!.Any(d => !d.IsContentOnlyDrive))
         {
             (capacity, free) = (node.Children!.Sum(d => d.Capacity), node.Children!.Sum(d => d.FreeSize));
         }
@@ -559,6 +720,9 @@ public partial class MainWindow : Window
                 string text = $"{Format.Bytes(total - node.FreeSize)} used of {Format.Bytes(total)} across {Format.Count(node.Children!.Count, "drive", "drives")}";
                 return node.FileCount > 0 ? text + $"\n{Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" : text;
             }
+            case NodeKind.Drive when node.IsContentOnlyDrive:
+                return $"{Format.Bytes(node.Size)} of files  ·  {Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" +
+                       DeniedSuffix(node) + (node.Hardware is { } cloud ? $"\n{cloud.DiskLine}" : "");
             case NodeKind.Drive:
                 return $"{Format.Bytes(node.Capacity - node.FreeSize)} used of {Format.Bytes(node.Capacity)}  ·  {Format.Bytes(node.FreeSize)} free\n" +
                        $"{Format.Count(node.FileCount)} files  ·  {Format.Count(node.DirCount)} folders" + DeniedSuffix(node) +
@@ -1133,7 +1297,9 @@ public partial class MainWindow : Window
 
     private void OpenRow(RowItem row)
     {
-        if (row.Node.IsContainer)
+        if (row.Node.NotScanned)
+            OpenDrivesMenu();
+        else if (row.Node.IsContainer)
             TryOpen(row.Node);
         else
             ShowOnMap(row.Node);
@@ -1156,6 +1322,157 @@ public partial class MainWindow : Window
     // ---- Toolbar & keyboard ----
 
     private void Up_Click(object sender, RoutedEventArgs e) => GoUp();
+
+    // ---- Drives menu ----
+
+    private void DrivesButton_Click(object sender, RoutedEventArgs e) => OpenDrivesMenu();
+
+    /// <summary>
+    /// A checklist of drives plus the network/cloud toggle. Changes apply when the menu closes:
+    /// newly ticked drives are scanned and unticked ones removed, without rescanning the rest.
+    /// </summary>
+    private void OpenDrivesMenu()
+    {
+        var menu = new ContextMenu
+        {
+            PlacementTarget = DrivesButton,
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+        };
+
+        var driveItems = new List<(MenuItem Item, DriveEntry Entry)>();
+        var toggle = new MenuItem
+        {
+            Header = "Include network & cloud drives",
+            Icon = CheckIcon(App.Settings.IncludeNetworkDrives),
+            StaysOpenOnClick = true,
+            ToolTip = "Network shares and cloud-sync drives (Google Drive, pCloud…) are skipped by default.",
+        };
+        toggle.Click += (_, _) =>
+        {
+            App.Settings.IncludeNetworkDrives = !App.Settings.IncludeNetworkDrives;
+            toggle.Icon = CheckIcon(App.Settings.IncludeNetworkDrives);
+            foreach (var (item, entry) in driveItems)
+                item.Icon = CheckIcon(IsIncluded(entry));
+        };
+        menu.Items.Add(toggle);
+        menu.Items.Add(new Separator());
+
+        if (_entries.Count == 0)
+            menu.Items.Add(new MenuItem { Header = "Looking for drives…", IsEnabled = false });
+
+        foreach (var entry in _entries.OrderBy(e => e.Key))
+        {
+            var item = new MenuItem
+            {
+                Header = DriveMenuHeader(entry),
+                Icon = CheckIcon(IsIncluded(entry)),
+                StaysOpenOnClick = true,
+            };
+            item.Click += (_, _) =>
+            {
+                SetIncluded(entry, !IsIncluded(entry));
+                item.Icon = CheckIcon(IsIncluded(entry));
+            };
+            driveItems.Add((item, entry));
+            menu.Items.Add(item);
+        }
+
+        menu.Closed += (_, _) =>
+        {
+            App.Settings.Save();
+            ApplyDriveSelection();
+        };
+        menu.IsOpen = true;
+    }
+
+    private TextBlock CheckIcon(bool on) => new()
+    {
+        Text = on ? "\uE73E" : "",
+        FontFamily = (FontFamily)FindResource("Icons"),
+        FontSize = 14,
+    };
+
+    private UIElement DriveMenuHeader(DriveEntry entry)
+    {
+        string glyph = entry.Node != null ? Theme.DriveGlyph(entry.Node) : entry.Source switch
+        {
+            DriveSource.Network => "\uE8CE",
+            DriveSource.Virtual => "\uE753",
+            _ => entry.Info.DriveType == DriveType.Removable ? "\uE88E" : "\uEDA2",
+        };
+        string name = entry.Node?.DisplayName ?? entry.Key;
+        string detail = entry.Source switch
+        {
+            DriveSource.Network => entry.NetworkPath ?? "network",
+            DriveSource.Virtual => "cloud / virtual",
+            _ when entry.NotReady => "not ready",
+            _ => entry.Node?.Hardware?.KindLabel ?? "local",
+        };
+
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(new TextBlock
+        {
+            Text = glyph,
+            FontFamily = (FontFamily)FindResource("Icons"),
+            FontSize = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        });
+        panel.Children.Add(new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center });
+        var muted = new TextBlock { Text = $"  ({detail})", VerticalAlignment = VerticalAlignment.Center };
+        muted.SetResourceReference(TextBlock.ForegroundProperty, "InkMuted");
+        panel.Children.Add(muted);
+        return panel;
+    }
+
+    /// <summary>Scans newly included drives and drops excluded ones, leaving the rest as they are.</summary>
+    private void ApplyDriveSelection()
+    {
+        var pc = _pc;
+        if (pc == null || _cts == null || _cts.IsCancellationRequested)
+            return;
+
+        var toScan = new List<DriveEntry>();
+        bool removed = false;
+        foreach (var entry in _entries)
+        {
+            bool want = IsIncluded(entry);
+            if (want && !entry.Active)
+            {
+                toScan.Add(entry);
+            }
+            else if (!want && entry.Active)
+            {
+                entry.Cts?.Cancel();
+                entry.Active = false;
+                entry.NotReady = false;
+                _probing.Remove(entry.Name);
+                if (entry.Node is { } node)
+                {
+                    pc.Children!.Remove(node);
+                    _scanners.RemoveAll(s => s.Drive == node);
+                    if (_current != null && (_current == node || node.IsAncestorOf(_current)))
+                        _current = null;
+                    entry.Node = null;
+                }
+                removed = true;
+            }
+        }
+
+        if (removed)
+        {
+            RecomputeRoot(pc);
+            if (_current == null)
+                NavigateTo(pc);
+            Map.Invalidate();
+            RefreshQuery();
+            RefreshHogs();
+        }
+        RefreshSidePanel();
+        UpdateStatus();
+        if (toScan.Count > 0)
+            _ = ScanEntries(toScan, pc, _cts.Token);
+    }
 
     private void Theme_Click(object sender, RoutedEventArgs e)
     {
